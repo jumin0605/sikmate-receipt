@@ -1,0 +1,387 @@
+# -*- coding: utf-8 -*-
+"""영양사 영수증 정리 - 웹 서버 (FastAPI)
+
+기존 '영수증_정리_도구.py' 의 함수를 그대로 불러 쓴다. 이 파일은 웹 껍데기만 맡는다.
+  업로드 -> 사진 정리(run) -> 내용 판독(extract_json) -> 지출현황 장부(make_ledger)
+
+환경변수
+  GEMINI_API_KEY    (필수) 결제 계정이 연결된 프로젝트의 키를 쓸 것
+  APP_ACCESS_CODE   (권장) 파일럿 참여자에게만 알려 주는 접속 코드. 비우면 누구나 접속
+  DATA_DIR          작업 파일 저장 위치 (기본 ./data)
+  RETENTION_DAYS    작업 파일 보관 일수 (기본 7)
+  MAX_FILES         한 번에 올릴 수 있는 파일 수 (기본 60)
+  MAX_FILE_MB       파일 하나 크기 상한 (기본 25)
+  DAILY_FILE_LIMIT  하루 전체 처리 장수 상한. 요금 폭주 방지 (기본 400)
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import queue
+import re
+import secrets
+import shutil
+import sys
+import threading
+import time
+import zipfile
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import Cookie, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+
+HERE = Path(__file__).resolve().parent
+DATA_DIR = Path(os.environ.get("DATA_DIR", HERE / "data")).resolve()
+RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "7"))
+MAX_FILES = int(os.environ.get("MAX_FILES", "60"))
+MAX_FILE_MB = int(os.environ.get("MAX_FILE_MB", "25"))
+DAILY_FILE_LIMIT = int(os.environ.get("DAILY_FILE_LIMIT", "400"))
+ACCESS_CODE = os.environ.get("APP_ACCESS_CODE", "").strip()
+ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".pdf"}
+
+JOBS_DIR = DATA_DIR / "jobs"
+JOBS_DIR.mkdir(parents=True, exist_ok=True)
+
+# 판독 모델. 기존 도구의 기본값(gemini-2.5-flash / gemini-3.1-pro-preview)은 2026-11 현재
+# 신규 키에서 막혀 있어서 웹에서는 따로 지정한다. 환경변수로 언제든 바꿀 수 있다.
+# (영수증_정리_도구.py 는 import 될 때 환경변수를 읽으므로 load_core() 보다 먼저 설정)
+MODEL = os.environ.setdefault("GEMINI_MODEL", "gemini-3.8-flash")
+PRO_MODEL = os.environ.setdefault("GEMINI_PRO_MODEL", "gemini-4-argon")
+
+
+def _decode_filename(name: str) -> str:
+    """일부 업로드 프로그램은 한글 파일명을 =?utf-8?B?...?= 로 감싸 보낸다. 풀어서 쓴다."""
+    if name.startswith("=?") and name.endswith("?="):
+        from email.header import decode_header, make_header
+        try:
+            return str(make_header(decode_header(name)))
+        except Exception:  # noqa: BLE001
+            return name
+    return name
+
+
+# ---------------------------------------------------------------------------
+# 기존 도구 불러오기 (프로젝트 폴더, 또는 webapp 옆에 복사해 둔 것)
+# ---------------------------------------------------------------------------
+def load_core():
+    for cand in (HERE.parent / "영수증_정리_도구.py", HERE / "영수증_정리_도구.py"):
+        if cand.exists():
+            spec = importlib.util.spec_from_file_location("receipt_core", cand)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["receipt_core"] = mod
+            spec.loader.exec_module(mod)
+            return mod
+    raise RuntimeError("영수증_정리_도구.py 를 찾지 못했습니다.")
+
+
+core = load_core()
+
+app = FastAPI(title="영양사 영수증 정리")
+_token_salt = os.environ.get("APP_SESSION_SALT", "receipt-web")
+
+
+def _token() -> str:
+    return hashlib.sha256((ACCESS_CODE + _token_salt).encode()).hexdigest()
+
+
+def _check_auth(token: str | None):
+    if ACCESS_CODE and token != _token():
+        raise HTTPException(status_code=401, detail="접속 코드가 필요합니다.")
+
+
+# ---------------------------------------------------------------------------
+# 작업 상태 (파일 한 개: jobs/<id>/status.json)
+# ---------------------------------------------------------------------------
+_status_lock = threading.Lock()
+
+
+def job_dir(job_id: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{16}", job_id):
+        raise HTTPException(status_code=404, detail="없는 작업입니다.")
+    p = JOBS_DIR / job_id
+    if not p.is_dir():
+        raise HTTPException(status_code=404, detail="없는 작업입니다.")
+    return p
+
+
+def read_status(job_id: str) -> dict:
+    p = job_dir(job_id) / "status.json"
+    with _status_lock:
+        return json.loads(p.read_text(encoding="utf-8"))
+
+
+def write_status(job_id: str, **changes) -> dict:
+    p = JOBS_DIR / job_id / "status.json"
+    with _status_lock:
+        st = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        st.update(changes)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(p)
+        return st
+
+
+def add_log(job_id: str, line: str):
+    line = str(line).rstrip()
+    if not line:
+        return
+    p = JOBS_DIR / job_id / "log.txt"
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+# ---------------------------------------------------------------------------
+# 처리 (한 번에 한 작업만. 기존 도구가 전역 상태를 쓰므로 줄을 세운다)
+# ---------------------------------------------------------------------------
+work_q: "queue.Queue[str]" = queue.Queue()
+
+
+def run_job(job_id: str):
+    jd = JOBS_DIR / job_id
+    src, cleaned, jdir = jd / "원본", jd / "정리결과", jd / "json"
+    st = read_status(job_id)
+    total = st["file_count"]
+    state = {"phase": "정리", "done": 0}
+
+    def log(msg=""):
+        msg = str(msg)
+        add_log(job_id, msg)
+        # 진행률: 정리 0~25%, 판독 25~90%, 장부 90~100%
+        if state["phase"] == "정리" and (msg.startswith("[완료]") or msg.startswith("[실패]")):
+            state["done"] += 1
+            write_status(job_id, progress=int(25 * state["done"] / max(total, 1)))
+        elif state["phase"] == "판독":
+            m = re.match(r"\[(\d+)/(\d+)\]", msg)
+            if m:
+                i, n = int(m.group(1)), int(m.group(2))
+                write_status(job_id, progress=25 + int(65 * (i - 1) / max(n, 1)))
+
+    try:
+        write_status(job_id, state="running", phase="사진 정리 중", progress=1,
+                     started=datetime.now().isoformat(timespec="seconds"))
+        written = core.run(str(src), out_dir=str(cleaned), bg="white", fmt="jpg",
+                           deskew=True, clean=True, rotate_upright=False,
+                           perspective=False, log=log)
+        if not written:
+            raise RuntimeError("정리된 영수증이 없습니다. 사진이 올바른지 확인해 주세요.")
+
+        state["phase"] = "판독"
+        write_status(job_id, phase="영수증 내용 읽는 중", progress=25)
+        made = core.extract_json([str(p) for p in written], out_dir=str(jdir),
+                                 model=MODEL, pro_model=PRO_MODEL, log=log)
+        if not made:
+            raise RuntimeError("영수증 내용을 읽지 못했습니다. 잠시 후 다시 시도해 주세요.")
+
+        state["phase"] = "장부"
+        write_status(job_id, phase="지출현황 엑셀 만드는 중", progress=90)
+        xlsx = core.make_ledger(str(jdir), out_path=str(jd / "지출현황.xlsx"),
+                                photos=str(cleaned), log=log)
+
+        # 정리된 사진 묶음(zip)도 함께 제공
+        with zipfile.ZipFile(jd / "정리된_영수증.zip", "w", zipfile.ZIP_DEFLATED) as z:
+            for p in sorted(cleaned.glob("*")):
+                z.write(p, p.name)
+
+        write_status(job_id, state="done", phase="완료", progress=100,
+                     finished=datetime.now().isoformat(timespec="seconds"),
+                     ledger=Path(xlsx).name)
+    except Exception as e:  # noqa: BLE001
+        add_log(job_id, f"[오류] {e}")
+        write_status(job_id, state="error", phase="오류", error=str(e)[:300])
+
+
+def worker():
+    while True:
+        job_id = work_q.get()
+        try:
+            run_job(job_id)
+        finally:
+            work_q.task_done()
+
+
+threading.Thread(target=worker, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# 보관 기간이 지난 작업 삭제 / 하루 사용량 집계
+# ---------------------------------------------------------------------------
+def purge_old():
+    cutoff = time.time() - RETENTION_DAYS * 86400
+    for p in JOBS_DIR.iterdir():
+        try:
+            if p.is_dir() and p.stat().st_mtime < cutoff:
+                shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def files_today() -> int:
+    today = datetime.now().strftime("%Y-%m-%d")
+    n = 0
+    for p in JOBS_DIR.iterdir():
+        sp = p / "status.json"
+        if sp.exists():
+            try:
+                st = json.loads(sp.read_text(encoding="utf-8"))
+                if st.get("created", "").startswith(today):
+                    n += int(st.get("file_count", 0))
+            except Exception:  # noqa: BLE001
+                pass
+    return n
+
+
+def _purge_loop():
+    while True:
+        purge_old()
+        time.sleep(3600)
+
+
+threading.Thread(target=_purge_loop, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# 화면 / API
+# ---------------------------------------------------------------------------
+LOGIN_HTML = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>접속 코드</title><style>body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;height:100vh;margin:0;background:#f4f6f8}
+form{background:#fff;padding:32px;border-radius:12px;box-shadow:0 2px 12px #0002;width:300px}
+input,button{width:100%;padding:12px;font-size:16px;margin-top:12px;box-sizing:border-box}button{background:#2f6fed;color:#fff;border:0;border-radius:8px}
+p{color:#c00;margin:8px 0 0}</style><form method=post action=/login><h3>영수증 정리</h3>
+<div>안내받은 접속 코드를 입력해 주세요.</div><input type=password name=code autofocus>
+<button>들어가기</button>{msg}</form>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def index(rc_auth: str | None = Cookie(default=None)):
+    if ACCESS_CODE and rc_auth != _token():
+        return HTMLResponse(LOGIN_HTML.replace("{msg}", ""))
+    return FileResponse(HERE / "static" / "index.html")
+
+
+@app.post("/login")
+def login(code: str = Form(...)):
+    if ACCESS_CODE and not secrets.compare_digest(code.strip(), ACCESS_CODE):
+        return HTMLResponse(LOGIN_HTML.replace("{msg}", "<p>코드가 맞지 않습니다.</p>"), status_code=401)
+    r = RedirectResponse("/", status_code=303)
+    r.set_cookie("rc_auth", _token(), max_age=30 * 86400, httponly=True, samesite="lax")
+    return r
+
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True, "gemini_key": bool(os.environ.get("GEMINI_API_KEY"))}
+
+
+@app.post("/api/jobs")
+async def create_job(files: list[UploadFile] = File(...), rc_auth: str | None = Cookie(default=None)):
+    _check_auth(rc_auth)
+    if not os.environ.get("GEMINI_API_KEY"):
+        raise HTTPException(500, "서버에 GEMINI_API_KEY 가 설정되어 있지 않습니다.")
+    if not files:
+        raise HTTPException(400, "파일을 선택해 주세요.")
+    if len(files) > MAX_FILES:
+        raise HTTPException(400, f"한 번에 {MAX_FILES}개까지 올릴 수 있습니다.")
+    if files_today() + len(files) > DAILY_FILE_LIMIT:
+        raise HTTPException(429, "오늘 처리 가능한 양을 넘었습니다. 내일 다시 시도해 주세요.")
+
+    job_id = secrets.token_hex(8)
+    jd = JOBS_DIR / job_id
+    (jd / "원본").mkdir(parents=True)
+    saved, skipped = 0, []
+    used = set()
+    for uf in files:
+        name = Path(_decode_filename(uf.filename or "")).name
+        ext = Path(name).suffix.lower()
+        if ext not in ALLOWED_EXT:
+            skipped.append(f"{name} (지원하지 않는 형식)")
+            continue
+        stem = re.sub(r'[\\/:*?"<>|]', "_", Path(name).stem).strip() or "영수증"
+        final = f"{stem}{ext}"
+        k = 2
+        while final.lower() in used:
+            final = f"{stem}_{k}{ext}"
+            k += 1
+        used.add(final.lower())
+        data = await uf.read()
+        if len(data) > MAX_FILE_MB * 1024 * 1024:
+            skipped.append(f"{name} ({MAX_FILE_MB}MB 초과)")
+            continue
+        (jd / "원본" / final).write_bytes(data)
+        saved += 1
+    if not saved:
+        shutil.rmtree(jd, ignore_errors=True)
+        raise HTTPException(400, "처리할 수 있는 파일이 없습니다. " + ", ".join(skipped))
+
+    write_status(job_id, state="queued", phase="대기 중", progress=0, file_count=saved,
+                 skipped=skipped, created=datetime.now().isoformat(timespec="seconds"))
+    work_q.put(job_id)
+    return {"job_id": job_id, "file_count": saved, "skipped": skipped}
+
+
+@app.get("/api/jobs/{job_id}")
+def job_info(job_id: str, rc_auth: str | None = Cookie(default=None)):
+    _check_auth(rc_auth)
+    st = read_status(job_id)
+    st["queue_ahead"] = max(0, list(work_q.queue).index(job_id)) if job_id in list(work_q.queue) else 0
+    logp = JOBS_DIR / job_id / "log.txt"
+    st["log_tail"] = logp.read_text(encoding="utf-8").splitlines()[-12:] if logp.exists() else []
+    return st
+
+
+@app.get("/api/jobs/{job_id}/receipts")
+def job_receipts(job_id: str, rc_auth: str | None = Cookie(default=None)):
+    """판독 결과 요약 (화면 표용). 확인이 필요한 영수증을 맨 위로 올린다."""
+    _check_auth(rc_auth)
+    jdir = job_dir(job_id) / "json"
+    rows = []
+    for p in sorted(jdir.glob("*.json")):
+        if p.name.startswith("_"):
+            continue
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        v = d.get("_검산") or {}
+        rows.append({
+            "file": Path(d.get("_원본", p.stem)).name,
+            "vendor": d.get("상호"),
+            "date": d.get("거래일자"),
+            "total": d.get("총액"),
+            "items": len(d.get("품목") or []),
+            "needs_check": bool(v.get("확인필요")),
+            "note": core.json_note(v) if v.get("확인필요") else "",
+            "unsure": d.get("판독주의") or [],
+        })
+    rows.sort(key=lambda r: (not r["needs_check"], r["date"] or "9999", r["file"]))
+    return {"rows": rows, "need_count": sum(r["needs_check"] for r in rows)}
+
+
+@app.get("/api/jobs/{job_id}/download/{kind}")
+def download(job_id: str, kind: str, rc_auth: str | None = Cookie(default=None)):
+    _check_auth(rc_auth)
+    jd = job_dir(job_id)
+    files = {
+        "ledger": (jd / "지출현황.xlsx", "식자재_지출현황.xlsx"),
+        "images": (jd / "정리된_영수증.zip", "정리된_영수증.zip"),
+        "json": (jd / "json" / "_요약.csv", "영수증_요약.csv"),
+    }
+    if kind not in files or not files[kind][0].exists():
+        raise HTTPException(404, "파일이 아직 없습니다.")
+    path, nice = files[kind]
+    return FileResponse(path, filename=nice)
+
+
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str, rc_auth: str | None = Cookie(default=None)):
+    """사용자가 직접 자기 작업(영수증 포함)을 즉시 삭제"""
+    _check_auth(rc_auth)
+    shutil.rmtree(job_dir(job_id), ignore_errors=True)
+    return {"deleted": True}
+
+
+app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")

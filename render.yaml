@@ -1,0 +1,21 @@
+# Render 배포 설정 (Blueprint). 키 값은 여기에 쓰지 않고 Render 화면에서 직접 입력한다.
+services:
+  - type: web
+    name: receipt-web
+    runtime: docker
+    plan: starter            # 무료 플랜은 메모리(512MB)가 모자라고 잠들기 때문에 운영에는 유료 권장
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: GEMINI_API_KEY    # 결제 계정이 연결된 프로젝트의 키
+        sync: false
+      - key: APP_ACCESS_CODE   # 파일럿 참여자에게만 알려 줄 접속 코드
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: GEMINI_PRO_MODEL
+        value: gemini-4-argon
+      - key: RETENTION_DAYS
+        value: "7"
+      - key: DAILY_FILE_LIMIT
+        value: "400"

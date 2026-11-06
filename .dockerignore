@@ -1,0 +1,13 @@
+.git
+.claude
+26.*월분
+26.*월분_정리결과
+*.xlsx
+*.zip
+*.exe
+build
+dist
+__pycache__
+식자재검수서생성기
+setx GEMINI_API_KEY*.txt
+webapp/data

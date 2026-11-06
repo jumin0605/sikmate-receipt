@@ -1,0 +1,21 @@
+# 비밀키 / 환경설정
+.env
+*.env
+setx GEMINI_API_KEY*.txt
+.claude/
+
+# 고객/실제 영수증 및 결과물 (절대 올리지 말 것)
+26.*월분/
+26.*월분_정리결과/
+*.xlsx
+*.zip
+webapp/data/
+**/data/jobs/
+
+# 빌드 산출물
+build/
+dist/
+*.exe
+__pycache__/
+*.pyc
+.venv/
