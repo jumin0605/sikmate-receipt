@@ -11,3 +11,8 @@ __pycache__
 식자재검수서생성기
 setx GEMINI_API_KEY*.txt
 webapp/data
+
+# Never include local API credentials in a container build.
+.env
+*.env
+.venv
