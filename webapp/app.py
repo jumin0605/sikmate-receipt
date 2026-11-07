@@ -363,17 +363,25 @@ def job_receipts(job_id: str, rc_auth: str | None = Cookie(default=None)):
             d = json.loads(p.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
-        v = d.get("_검산") or {}
-        rows.append({
-            "file": Path(d.get("_원본", p.stem)).name,
-            "vendor": d.get("상호"),
-            "date": d.get("거래일자"),
-            "total": d.get("총액"),
-            "items": len(d.get("품목") or []),
-            "needs_check": bool(v.get("확인필요")),
-            "note": core.json_note(v) if v.get("확인필요") else "",
-            "unsure": d.get("판독주의") or [],
-        })
+        base = Path(d.get("_원본", p.stem)).name
+        kids = d.get("영수증") if isinstance(d.get("영수증"), list) else None
+        # 사진 한 장에 영수증이 여러 장이면 장마다 한 줄로 보여 준다
+        for n, r in enumerate(kids or [d], 1):
+            if not isinstance(r, dict):
+                continue
+            v = r.get("_검산") or d.get("_검산") or {}
+            rows.append({
+                "file": f"{base} ({n}/{len(kids)})" if kids else base,
+                "vendor": r.get("상호"),
+                # 장부와 똑같이 파일 이름의 날짜를 우선한다 (손글씨 날짜를 2020년 등으로 잘못 읽는 일이 있음)
+                "date": core.stem_date(Path(base).stem) or r.get("거래일자"),
+                "total": r.get("총액"),
+                "items": len(r.get("품목") or []),
+                "needs_check": bool(v.get("확인필요")),
+                "note": core.json_note(v) if v.get("확인필요") else "",
+                "hint": "" if v.get("확인필요") else core.json_hint(v),
+                "unsure": r.get("판독주의") or [],
+            })
     rows.sort(key=lambda r: (not r["needs_check"], r["date"] or "9999", r["file"]))
     return {"rows": rows, "need_count": sum(r["needs_check"] for r in rows)}
 

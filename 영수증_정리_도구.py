@@ -3223,6 +3223,7 @@ logging.getLogger("google_genai.models").setLevel(logging.ERROR)
 JSON_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 JSON_PRO_MODEL = os.environ.get("GEMINI_PRO_MODEL", "gemini-3.1-pro-preview")
 JSON_MAX_SIDE = 1600      # 긴 변을 이만큼으로 줄여 보낸다 (영수증 글씨는 충분히 읽힌다)
+JSON_RECHECK_SIDE = 2400  # 재판독은 손글씨 숫자가 뭉개지지 않게 더 크게 보낸다
 JSON_RETRY = 3
 JSON_RETRY_WAIT = 6       # 초. 실패할 때마다 배로 늘어난다
 
@@ -3258,6 +3259,8 @@ JSON_SCHEMA = {
             "items": {"type": "string"},
         },
         "비고": {"type": "string", "nullable": True},
+        "영수증장수": {"type": "integer", "nullable": True,
+                  "description": "이미지에 서로 다른 영수증이 몇 장 보이는지. 보통 1"},
     },
     "required": ["총액", "품목", "판독주의"],
 }
@@ -3275,6 +3278,13 @@ JSON_PROMPT = """당신은 한국 영수증을 읽어 회계 장부에 옮기는
 6. 영수증이 아니거나 아무것도 읽을 수 없으면 총액을 null 로 두고 비고에 이유를 적습니다.
 7. 소계, 합계, 총액, 공급가액, 부가세, 받은금액, 거스름돈 같은 정산 줄은 품목이 아닙니다.
    품목 배열에 넣지 마세요. 정산 줄까지 품목에 넣으면 합계가 두 배가 되어 맞지 않습니다.
+8. 한 이미지에 서로 다른 영수증이 둘 이상 보이면(나란히 놓인 경우 등) '영수증장수'에 그 수를 적으세요.
+   보통은 1입니다. 두 영수증의 금액을 합치거나 섞어서 읽지 마세요.
+9. 손글씨 숫자는 수량×단가=공급가액, 품목 금액의 합=합계 관계로 서로 맞는지 확인해, 앞뒤가 맞는 값을
+   고르세요. 그래도 확인이 안 되고 불확실하면 추측하지 말고 null 로 두세요.
+10. 합계는 표 위쪽 '합계금액' 칸, 표 아래쪽 '합계' 칸, 카드 승인금액이 있으면 서로 대조해 읽으세요.
+11. '판독주의' 에는 항목 이름만 짧게 적으세요. (예: 거래일자, 총액, 품목[2].이름)
+    이유, 계산 과정, 설명, 영어 문장은 쓰지 마세요.
 """
 
 
@@ -3337,12 +3347,13 @@ def json_preflight(client, model, log=print):
         log(f"  ! 사전 확인을 건너뜁니다 ({json_short_err(e)})")
 
 
-def json_page_png(img):
+def json_page_png(img, max_side=None):
     """정리 단계에서 쓰는 BGR ndarray 한 장을 Gemini 에 보낼 PNG 바이트로 만든다."""
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     pil = Image.fromarray(rgb)
-    if max(pil.size) > JSON_MAX_SIDE:
-        r = JSON_MAX_SIDE / max(pil.size)
+    side = max_side or JSON_MAX_SIDE
+    if max(pil.size) > side:
+        r = side / max(pil.size)
         pil = pil.resize((max(1, int(pil.width * r)), max(1, int(pil.height * r))),
                          Image.LANCZOS)
     buf = io.BytesIO()
@@ -3350,12 +3361,12 @@ def json_page_png(img):
     return buf.getvalue()
 
 
-def json_ask(client, png, model):
+def json_ask(client, png, model, schema=None, prompt=None):
     from google.genai import types
 
     cfg = types.GenerateContentConfig(
         response_mime_type="application/json",
-        response_schema=JSON_SCHEMA,
+        response_schema=schema or JSON_SCHEMA,
         temperature=0,
     )
     last = None
@@ -3364,7 +3375,7 @@ def json_ask(client, png, model):
             resp = client.models.generate_content(
                 model=model,
                 contents=[types.Part.from_bytes(data=png, mime_type="image/png"),
-                          JSON_PROMPT],
+                          prompt or JSON_PROMPT],
                 config=cfg,
             )
             return json.loads(resp.text)
@@ -3377,8 +3388,82 @@ def json_ask(client, png, model):
     raise RuntimeError(f"{JSON_RETRY}번 모두 실패: {json_short_err(last)}")
 
 
+def json_clean_cautions(items):
+    """판독주의 항목을 짧은 항목 이름만 남기고 정리한다.
+
+    일부 모델이 이유나 계산 과정, 영어 문장을 그대로 적는 일이 있어서 걸러 낸다.
+    """
+    out = []
+    for s in items or []:
+        s = str(s).strip()
+        s = re.split(r"\s*[(\uff08:\uff1a]|\s+-\s+|\s*\.\s|Notice|[Ww]ait|[Ll]et's", s)[0].strip(" ,;.")
+        if not s:
+            continue
+        if not re.search(r"[\uac00-\ud7a3]", s) and len(s) > 12:   # 한글 없이 긴 영어 문장은 버린다
+            continue
+        if len(s) > 40:
+            s = s[:40].rstrip(" ,;") + "…"
+        if s not in out:
+            out.append(s)
+    return out[:12]
+
+
+def json_repair(d):
+    """모델이 비워 둔 값 중 영수증 안의 다른 숫자로 계산되는 것만 채운다. 채운 곳은 '_보정'에 남긴다."""
+    fixes = []
+    items = d.get("품목") or []
+    for i, it in enumerate(items):
+        if not isinstance(it, dict):
+            continue
+        q, u = it.get("수량"), it.get("단가")
+        if it.get("금액") is None and isinstance(q, (int, float)) and isinstance(u, (int, float)) \
+                and q > 0 and u > 0:
+            it["금액"] = int(round(q * u))
+            fixes.append(f"품목[{i}].금액")
+    amounts = [it.get("금액") for it in items if isinstance(it, dict)]
+    if d.get("총액") is None:
+        sup, vat = d.get("공급가액"), d.get("부가세")
+        if isinstance(sup, int) and isinstance(vat, int) and sup + vat > 0:
+            d["총액"] = sup + vat
+            fixes.append("총액")
+        elif items and amounts and all(isinstance(a, (int, float)) for a in amounts):
+            d["총액"] = int(sum(amounts))
+            fixes.append("총액")
+    if fixes:
+        d["_보정"] = fixes
+    return d
+
+
 def json_verify(data):
-    """품목 합과 총액을 맞춰 보고 결과를 돌려준다."""
+    """품목 합과 총액을 맞춰 보고 결과를 돌려준다.
+
+    '확인필요' 는 정말 금액을 믿기 어려울 때만 켠다: 총액이 없거나, 품목 합과 총액이 다르거나,
+    총액을 계산으로 채웠거나, 모델이 총액을 불확실하다고 적은 경우다. 날짜나 카드번호처럼
+    장부 금액에 영향이 없는 불확실은 '판독주의' 목록에만 남기고 화면에는 참고로 보여 준다.
+    """
+    kids = data.get("영수증")
+    if isinstance(kids, list) and kids:          # 사진 한 장에 영수증 여러 장
+        vs = []
+        for k in kids:
+            if isinstance(k, dict):
+                k["_검산"] = json_verify(k)
+                vs.append(k["_검산"])
+        bad = [v for v in vs if v.get("상태") != "일치"]
+        cautions = []
+        for v in vs:
+            for c in v.get("판독주의") or []:
+                if c not in cautions:
+                    cautions.append(c)
+        return {
+            "품목수": sum(v.get("품목수", 0) for v in vs),
+            "품목금액합": None,
+            "상태": bad[0]["상태"] if bad else "일치",
+            "판독주의": cautions,
+            "보정": [x for v in vs for x in (v.get("보정") or [])],
+            "확인필요": any(v.get("확인필요") for v in vs),
+            "영수증수": len(vs),
+        }
+
     items = data.get("품목") or []
     amounts = [i.get("금액") for i in items if isinstance(i.get("금액"), (int, float))]
     total = data.get("총액")
@@ -3398,19 +3483,94 @@ def json_verify(data):
     if isinstance(sup, int) and isinstance(vat, int) and isinstance(total, int):
         r["공급가액+부가세차액"] = total - (sup + vat)
 
-    r["판독주의"] = data.get("판독주의") or []
-    r["확인필요"] = bool(r["판독주의"]) or r["상태"] != "일치"
+    cautions = json_clean_cautions(data.get("판독주의"))
+    data["판독주의"] = cautions                    # 파일에도 정리된 문구만 남긴다
+    if isinstance(data.get("비고"), str) and len(data["비고"]) > 300:
+        data["비고"] = data["비고"][:300] + "…"
+    fixes = list(data.get("_보정") or [])
+    r["판독주의"] = cautions
+    r["보정"] = fixes
+    total_unsure = any(("총액" in c or "합계" in c) for c in cautions)
+    r["확인필요"] = (r["상태"] in ("총액없음", "검산불일치")) or ("총액" in fixes) or total_unsure
     return r
 
 
 def json_note(v):
-    """검산 결과를 한 줄로 적는다."""
-    bits = [v["상태"]] if v.get("상태") != "일치" else []
+    """확인이 필요한 이유를 한 줄로 적는다."""
+    bits = [v["상태"]] if v.get("상태") not in (None, "일치") else []
     if v.get("차액"):
         bits.append(f"차액 {v['차액']}원")
+    if v.get("보정"):
+        bits.append("계산으로 채움: " + ",".join(v["보정"]))
     if v.get("판독주의"):
         bits.append("판독주의 " + ",".join(v["판독주의"]))
     return " / ".join(bits)
+
+
+def json_hint(v):
+    """금액은 믿을 수 있지만 알아 두면 좋은 점을 짧게 적는다 (화면의 참고 문구)."""
+    cs = " ".join(v.get("판독주의") or [])
+    hints = []
+    if "거래일자" in cs:
+        hints.append("날짜를 읽지 못해 파일 이름의 날짜를 씁니다")
+    if any(k in cs for k in ("상호", "사업자", "카드번호", "승인번호", "결제수단")):
+        hints.append("상호·번호 일부를 읽지 못했습니다")
+    if v.get("상태") == "품목금액없음":
+        hints.append("품목별 금액 없이 총액만 읽었습니다")
+    if not hints and cs:
+        hints.append("일부 글자가 불분명합니다")
+    return " · ".join(hints)
+
+
+def json_score(d):
+    """재판독 결과와 1차 결과 중 어느 쪽이 나은지 비교하는 점수 (클수록 좋다)."""
+    v = d.get("_검산") or {}
+    total = d.get("총액")
+    ok_total = isinstance(total, (int, float)) or (
+        isinstance(d.get("영수증"), list) and bool(d["영수증"]))
+    return (not v.get("확인필요"), ok_total, v.get("상태") == "일치")
+
+
+def json_pack_multi(kids):
+    """한 사진 안의 영수증 여러 장을 장부가 받는 '영수증 목록' 모양으로 묶는다."""
+    for n, k in enumerate(kids, 1):
+        k["사진내순번"] = n
+        json_repair(k)
+    vendors = [k.get("상호") for k in kids if k.get("상호")]
+    totals = [k.get("총액") for k in kids]
+    return {
+        "영수증": kids,
+        "상호": " / ".join(vendors) if vendors else None,
+        "총액": sum(totals) if all(isinstance(t, int) for t in totals) else None,
+        "거래일자": next((k.get("거래일자") for k in kids if k.get("거래일자")), None),
+        "품목": [], "판독주의": [], "비고": f"한 사진에 영수증 {len(kids)}장",
+    }
+
+
+def json_read(client, page_img, model, max_side=None):
+    """사진 한 장을 읽어 판독 결과를 돌려준다. 영수증이 여러 장이면 따로따로 읽는다."""
+    png = json_page_png(page_img, max_side)
+    data = json_ask(client, png, model)
+    n = data.get("영수증장수")
+    if isinstance(n, int) and 2 <= n <= 4:
+        one = {k: v for k, v in JSON_SCHEMA["properties"].items() if k != "영수증장수"}
+        schema = {"type": "object", "required": ["영수증"],
+                  "properties": {"영수증": {"type": "array", "items": {
+                      "type": "object", "properties": one,
+                      "required": ["총액", "품목", "판독주의"]}}}}
+        prompt = (JSON_PROMPT + f"\n이 이미지에는 서로 다른 영수증이 {n}장 있습니다. 왼쪽, 위쪽 영수증부터 "
+                  "순서대로 각각 따로 읽어 '영수증' 배열에 한 장씩 넣으세요. 금액이나 품목을 합치거나 "
+                  "섞지 마세요. 각 영수증의 총액은 그 영수증 자기 합계 줄의 값입니다.")
+        try:
+            kids = [k for k in json_ask(client, png, model, schema=schema, prompt=prompt).get("영수증", [])
+                    if isinstance(k, dict)]
+        except JsonFatalError:
+            raise
+        except Exception:
+            kids = []
+        if len(kids) >= 2:
+            return json_pack_multi(kids)
+    return json_repair(data)
 
 
 def json_file_hash(path):
@@ -3552,9 +3712,8 @@ def extract_json(target, out_dir=None, model=None, pro_model=None, auto_pro=True
             else:
                 log(f"[{i}/{len(files)}] {label}")
 
-            png = json_page_png(page)
             try:
-                data = json_ask(client, png, model)
+                data = json_read(client, page, model)
             except JsonFatalError as e:
                 # 키/권한 문제다. 남은 사진을 돌려 봐야 똑같이 실패한다.
                 log(f"[중단] {e}")
@@ -3589,7 +3748,7 @@ def extract_json(target, out_dir=None, model=None, pro_model=None, auto_pro=True
         for n, (idx, page, dst, label) in enumerate(pro_todo, 1):
             log(f"[재판독 {n}/{len(pro_todo)}] {label}")
             try:
-                data = json_ask(client, json_page_png(page), pro_model)
+                data = json_read(client, page, pro_model, JSON_RECHECK_SIDE)
             except JsonFatalError as e:
                 log(f"[중단] {e}")
                 log("  1차 결과는 그대로 남아 있습니다. 원인을 고친 뒤 다시 실행하면"
@@ -3607,6 +3766,9 @@ def extract_json(target, out_dir=None, model=None, pro_model=None, auto_pro=True
             data["_처리시각"] = datetime.now().isoformat(timespec="seconds")
             data["_모델"] = pro_model
             data["_검산"] = json_verify(data)
+            if json_score(before) > json_score(data):
+                log("    -> 재판독 결과가 더 나빠 1차 결과를 그대로 둡니다")
+                continue
             data["_1차판독"] = {"모델": before.get("_모델"), "총액": before.get("총액"),
                              "검산": before.get("_검산")}
             json_write(dst, data)
