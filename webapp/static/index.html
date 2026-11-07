@@ -15,10 +15,12 @@
   header p{margin:0;opacity:.9}
   main{max-width:880px;margin:24px auto;padding:0 16px}
   .card{background:#fff;border-radius:12px;box-shadow:0 1px 8px #0001;padding:22px;margin-bottom:18px}
-  #drop{border:2px dashed #5eead4;border-radius:12px;padding:40px 16px;text-align:center;cursor:pointer;background:#f0fdfa}
+  #drop{display:block;position:relative;border:2px dashed #5eead4;border-radius:12px;padding:40px 16px;text-align:center;cursor:pointer;background:#f0fdfa}
   #drop.over{background:#ccfbf1;border-color:#0f766e}
   #drop b{font-size:18px}
   #drop small{display:block;color:#6b7280;margin-top:8px}
+  /* display:none 이면 일부 브라우저에서 파일 선택이 열리지 않는다 */
+  #pick{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;font-size:16px}
   button{background:#0f766e;color:#fff;border:0;border-radius:8px;padding:12px 22px;font-size:16px;cursor:pointer}
   button:disabled{background:#a5b4d8;cursor:default}
   button.sub{background:#fff;color:#0f766e;border:1px solid #0f766e}
@@ -56,9 +58,9 @@
 <main>
 
 <section class="card" id="step1">
-  <div id="drop"><b>여기에 영수증 사진·PDF를 끌어다 놓거나 눌러서 선택</b>
-    <small>JPG · PNG · PDF / 시험 서버: 한 번에 10개까지 / 파일 하나 10MB까지</small></div>
-  <input id="pick" type="file" multiple accept=".jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.pdf,image/*,application/pdf" class="hide">
+  <label id="drop" for="pick"><b>여기에 영수증 사진·PDF·폴더를 끌어다 놓거나 눌러서 선택</b>
+    <small>폴더를 그대로 끌어다 놓으면 하위 폴더의 파일까지 찾습니다. JPG · JPEG · PNG · WEBP · BMP · TIF · TIFF · PDF / 시험 서버: 한 번에 10개까지 / 파일 하나 10MB까지</small></label>
+  <input id="pick" type="file" multiple accept=".jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.pdf,image/jpeg,image/png,image/webp,image/bmp,image/tiff,application/pdf">
   <div id="files"></div>
   <div class="row"><button id="go" disabled>정리 시작</button><span id="err" style="color:#b91c1c"></span></div>
   <p class="note">시험 서버는 재시작·재배포 시 작업 파일이 지워질 수 있으므로 결과는 바로 다운로드해 주세요. 남아 있는 영수증은 정리가 끝난 뒤 7일이 지나면 자동으로 지워지고, 결과 화면의 '지금 삭제' 버튼으로 바로 지울 수도 있습니다.
@@ -90,6 +92,7 @@
 
 </main>
 <footer class="pf">시범 운영 중 · <a href="/privacy">개인정보 처리 안내</a></footer>
+<script src="/static/receipt-upload.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 let picked = [], jobId = null, timer = null;
@@ -97,31 +100,127 @@ let picked = [], jobId = null, timer = null;
 const won = n => n == null ? '<span style="color:#b91c1c">읽지 못함</span>' : n.toLocaleString('ko-KR') + '원';
 const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-function setFiles(list){
-  picked = [...list];
-  $('#files').textContent = picked.length ? `선택한 파일 ${picked.length}개` : '';
-  $('#go').disabled = !picked.length;
-  $('#err').textContent = '';
-}
-$('#drop').onclick = () => $('#pick').click();
-$('#pick').onchange = e => setFiles(e.target.files);
-['dragover','dragenter'].forEach(ev => $('#drop').addEventListener(ev, e => {e.preventDefault(); $('#drop').classList.add('over');}));
-['dragleave','drop'].forEach(ev => $('#drop').addEventListener(ev, e => {e.preventDefault(); $('#drop').classList.remove('over');}));
-$('#drop').addEventListener('drop', e => setFiles(e.dataTransfer.files));
-
-$('#go').onclick = async () => {
-  $('#go').disabled = true; $('#err').textContent = '올리는 중…';
-  const fd = new FormData(); picked.forEach(f => fd.append('files', f));
-  try {
-    const r = await fetch('/api/jobs', {method:'POST', body: fd});
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.detail || '업로드에 실패했습니다.');
-    jobId = j.job_id;
-    localStorage.setItem('lastJob', jobId);
-    $('#step1').classList.add('hide'); $('#step2').classList.remove('hide');
-    poll(); timer = setInterval(poll, 2000);
-  } catch (e) { $('#err').textContent = e.message; $('#go').disabled = false; }
+const uploadApi = typeof ReceiptUpload === 'undefined' ? null : ReceiptUpload;
+let ingestDrop = function () {};
+const isFileDrag = e => {
+  const types = e.dataTransfer && e.dataTransfer.types;
+  if (!types || typeof types.length !== 'number') return false;
+  for (let i = 0; i < types.length; i++) if (types[i] === 'Files') return true;
+  return false;
 };
+['dragenter', 'dragover'].forEach(type => document.addEventListener(type, e => {
+  if (!isFileDrag(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+}, true));
+document.addEventListener('drop', e => {
+  if (isFileDrag(e)) e.preventDefault();
+}, true);
+document.addEventListener('drop', e => {
+  if (!isFileDrag(e) || e.receiptDropHandled) return;
+  e.preventDefault();
+  ingestDrop(e.dataTransfer);
+});
+['dragover', 'dragenter'].forEach(ev => $('#drop').addEventListener(ev, e => {
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  $('#drop').classList.add('over');
+}));
+$('#drop').addEventListener('dragleave', e => {
+  const next = e.relatedTarget;
+  if (next && $('#drop').contains(next)) return;
+  $('#drop').classList.remove('over');
+});
+
+if (!uploadApi) {
+  $('#err').textContent = '업로드 기능을 불러오지 못했습니다. 새로고침 후 다시 시도해 주세요.';
+  $('#go').disabled = true;
+} else {
+  const gate = uploadApi.createSelectionGate();
+  let busy = false;
+  let suppressChange = false;
+  const step1Open = () => !$('#step1').classList.contains('hide');
+  const applyDescribed = view => {
+    picked = view.files;
+    $('#files').textContent = view.fileText;
+    $('#err').textContent = view.errorText;
+    $('#go').disabled = !view.canStart;
+  };
+  const beginSelection = (work, options) => {
+    if (busy || !step1Open()) return;
+    const token = gate.start();
+    const reading = !!(options && options.reading);
+    picked = [];
+    $('#go').disabled = true;
+    if (reading) {
+      $('#files').textContent = uploadApi.MESSAGES.reading;
+      $('#err').textContent = '';
+    }
+    Promise.resolve(work).then(result => {
+      if (!gate.isCurrent(token)) return;
+      applyDescribed(uploadApi.describeSelection(result));
+    }, () => {
+      if (!gate.isCurrent(token)) return;
+      applyDescribed(uploadApi.describeSelection(uploadApi.failedSelection()));
+    });
+  };
+  ingestDrop = dataTransfer => {
+    if (busy || !step1Open()) return;
+    let work;
+    let reading = false;
+    try {
+      const snapshot = uploadApi.snapshotDataTransfer(dataTransfer);
+      reading = !!snapshot.entryMode;
+      work = uploadApi.collectSnapshot(snapshot);
+    } catch (e) {
+      work = Promise.reject(e);
+    }
+    beginSelection(work, { reading });
+  };
+  const takeZoneDrop = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.receiptDropHandled = true;
+    $('#drop').classList.remove('over');
+    ingestDrop(e.dataTransfer);
+  };
+  $('#drop').addEventListener('drop', takeZoneDrop);
+  $('#pick').addEventListener('drop', e => {
+    suppressChange = true;
+    setTimeout(() => { suppressChange = false; }, 0);
+    takeZoneDrop(e);
+  });
+  $('#pick').addEventListener('change', () => {
+    const input = $('#pick');
+    const files = [];
+    const list = input.files;
+    if (list) for (let i = 0; i < list.length; i++) files.push(list[i]);
+    input.value = '';
+    if (suppressChange) { suppressChange = false; return; }
+    if (busy || !step1Open()) return;
+    beginSelection(Promise.resolve(uploadApi.classifyFileList(files)), { reading: false });
+  });
+  $('#go').onclick = async () => {
+    if (busy || !picked.length) return;
+    const batch = picked.slice();
+    busy = true;
+    $('#go').disabled = true;
+    $('#err').textContent = '올리는 중…';
+    try {
+      const j = await uploadApi.submitJob(batch, (url, opts) => fetch(url, opts));
+      jobId = j.job_id;
+      localStorage.setItem('lastJob', jobId);
+      $('#step1').classList.add('hide'); $('#step2').classList.remove('hide');
+      poll(); timer = setInterval(poll, 2000);
+    } catch (e) {
+      $('#err').textContent = (e && e.message) || '업로드에 실패했습니다.';
+      $('#go').disabled = !picked.length;
+    } finally {
+      busy = false;
+    }
+  };
+}
 
 async function poll(){
   const r = await fetch('/api/jobs/' + jobId);
