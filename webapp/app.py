@@ -35,7 +35,10 @@ from fastapi import Cookie, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from env_config import load_project_env
+
 HERE = Path(__file__).resolve().parent
+load_project_env(HERE.parent)
 DATA_DIR = Path(os.environ.get("DATA_DIR", HERE / "data")).resolve()
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "7"))
 MAX_FILES = int(os.environ.get("MAX_FILES", "60"))
@@ -307,7 +310,8 @@ async def create_job(files: list[UploadFile] = File(...), rc_auth: str | None = 
             final = f"{stem}_{k}{ext}"
             k += 1
         used.add(final.lower())
-        data = await uf.read()
+        # 거대한 업로드를 한꺼번에 메모리에 읽지 않는다.
+        data = await uf.read(MAX_FILE_MB * 1024 * 1024 + 1)
         if len(data) > MAX_FILE_MB * 1024 * 1024:
             skipped.append(f"{name} ({MAX_FILE_MB}MB 초과)")
             continue
