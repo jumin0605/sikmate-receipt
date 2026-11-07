@@ -54,8 +54,12 @@ class UploadContractTests(unittest.TestCase):
             "submitJob",
             "한 번에 10개까지",
             "10MB",
+            'id="retryPoll"',
+            'id="newUpload"',
+            'id="relogin"',
         ):
             self.assertIn(marker, HTML)
+        self.assertNotIn("보관 기간이 지났을 수 있습니다", HTML)
 
 
 if __name__ == "__main__":

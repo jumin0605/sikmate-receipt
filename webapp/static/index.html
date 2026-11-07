@@ -72,6 +72,14 @@
   <div class="bar"><div id="pbar"></div></div>
   <div id="pct" class="note"></div>
   <div id="log"></div>
+  <div id="recover" class="hide">
+    <p id="recoverMsg" class="note"></p>
+    <div class="row">
+      <button type="button" id="retryPoll">다시 확인</button>
+      <button type="button" class="sub" id="newUpload">새로 올리기</button>
+      <button type="button" class="sub hide" id="relogin">다시 로그인</button>
+    </div>
+  </div>
 </section>
 
 <section class="card hide" id="step3">
@@ -211,8 +219,7 @@ if (!uploadApi) {
       const j = await uploadApi.submitJob(batch, (url, opts) => fetch(url, opts));
       jobId = j.job_id;
       localStorage.setItem('lastJob', jobId);
-      $('#step1').classList.add('hide'); $('#step2').classList.remove('hide');
-      poll(); timer = setInterval(poll, 2000);
+      startWatching();
     } catch (e) {
       $('#err').textContent = (e && e.message) || '업로드에 실패했습니다.';
       $('#go').disabled = !picked.length;
@@ -222,16 +229,132 @@ if (!uploadApi) {
   };
 }
 
+let watchGen = 0;
+let pollSeq = 0;
+let lastAppliedSeq = 0;
+const POLL_TIMEOUT_MS = 15000;
+function stopPolling() {
+  if (timer) clearInterval(timer);
+  timer = null;
+}
+function issueToken() {
+  pollSeq += 1;
+  return { watch: watchGen, seq: pollSeq, job: jobId, abandoned: false, settled: false };
+}
+// 이미 적용한 응답보다 오래된 것만 버린다. 2초마다 새 요청을 시작해도
+// 아직 적용되지 않은 성공 응답은 늦어도 반영된다.
+function isCurrent(token) {
+  return !!(token && !token.abandoned && token.watch === watchGen && token.seq >= lastAppliedSeq && token.job && token.job === jobId);
+}
+function noteApplied(token) {
+  if (token && token.seq > lastAppliedSeq) lastAppliedSeq = token.seq;
+}
+function setHidden(el, hidden) {
+  if (hidden) el.classList.add('hide');
+  else el.classList.remove('hide');
+}
+function showRecover(kind, message) {
+  $('#recoverMsg').textContent = message;
+  setHidden($('#recover'), false);
+  setHidden($('#retryPoll'), kind === 'auth');
+  setHidden($('#newUpload'), kind === 'auth');
+  setHidden($('#relogin'), kind !== 'auth');
+  if (kind === 'missing') {
+    $('#pbar').style.width = '0';
+    $('#pct').textContent = '서버에 남은 진행 정보가 없습니다.';
+    $('#log').textContent = '';
+    setHidden($('#log'), true);
+  }
+}
+function hideRecover() {
+  setHidden($('#recover'), true);
+}
+function applyAuth(token) {
+  if (!isCurrent(token)) return;
+  noteApplied(token);
+  stopPolling();
+  watchGen += 1;
+  $('#phase').textContent = '로그인이 필요합니다';
+  showRecover('auth', '접속 확인이 필요합니다. 작업은 지우지 않았습니다. 다시 로그인한 뒤 이어서 볼 수 있습니다.');
+}
+function applyMissing(token) {
+  if (!isCurrent(token)) return;
+  noteApplied(token);
+  if (localStorage.getItem('lastJob') === token.job) localStorage.removeItem('lastJob');
+  stopPolling();
+  watchGen += 1;
+  $('#step3').classList.add('hide');
+  $('#step2').classList.remove('hide');
+  $('#phase').textContent = '작업을 서버에서 찾지 못했습니다';
+  showRecover('missing', '이 작업을 서버에서 찾지 못했습니다. 서버가 다시 시작되면 올려 둔 파일이 함께 사라져 여기서 복구할 수 없습니다. 영수증을 다시 올려 주세요.');
+}
+function startWatching() {
+  watchGen += 1;
+  stopPolling();
+  $('#step1').classList.add('hide');
+  $('#step3').classList.add('hide');
+  $('#step2').classList.remove('hide');
+  poll();
+  timer = setInterval(poll, 2000);
+}
+function notePollTimeout(token) {
+  if (token.settled) return;
+  token.abandoned = true;
+  if (token.watch !== watchGen || token.job !== jobId) return;
+  if (token.seq < lastAppliedSeq || token.seq !== pollSeq) return;
+  $('#phase').textContent = '잠시 후 다시 확인합니다';
+  showRecover('transient', '응답이 늦습니다. 작업을 지우지 않았고, 다시 확인합니다.');
+}
 async function poll(){
-  const r = await fetch('/api/jobs/' + jobId);
-  if (!r.ok) { clearInterval(timer); $('#phase').textContent = '작업을 찾을 수 없습니다. (보관 기간이 지났을 수 있습니다)'; return; }
-  const s = await r.json();
+  if (!jobId) return;
+  const token = issueToken();
+  const timeoutId = setTimeout(() => notePollTimeout(token), POLL_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch('/api/jobs/' + token.job);
+  } catch (e) {
+    if (!isCurrent(token)) return;
+    noteApplied(token);
+    $('#phase').textContent = '연결을 확인하지 못했습니다';
+    showRecover('transient', '네트워크에 연결하지 못했습니다. 작업을 지우지 않았고, 자동으로 다시 확인합니다.');
+    return;
+  } finally {
+    token.settled = true;
+    clearTimeout(timeoutId);
+  }
+  if (!isCurrent(token)) return;
+  if (response.status === 401) { applyAuth(token); return; }
+  if (response.status === 404) { applyMissing(token); return; }
+  if (!response.ok) {
+    noteApplied(token);
+    $('#phase').textContent = '잠시 후 다시 확인합니다';
+    showRecover('transient', '서버가 잠시 응답하지 못했습니다. 작업을 지우지 않았고, 자동으로 다시 확인합니다.');
+    return;
+  }
+  let s;
+  try { s = await response.json(); }
+  catch (e) {
+    if (!isCurrent(token)) return;
+    noteApplied(token);
+    $('#phase').textContent = '잠시 후 다시 확인합니다';
+    showRecover('transient', '서버 응답을 읽지 못했습니다. 작업을 지우지 않았고, 자동으로 다시 확인합니다.');
+    return;
+  }
+  if (!isCurrent(token)) return;
+  noteApplied(token);
+  localStorage.setItem('lastJob', token.job);
+  hideRecover();
+  setHidden($('#log'), false);
   $('#phase').textContent = s.state === 'queued' ? `대기 중 (앞에 ${s.queue_ahead}건)` : s.phase;
   $('#pbar').style.width = (s.progress || 0) + '%';
   $('#pct').textContent = `${s.progress || 0}%  ·  영수증 ${s.file_count}개` + (s.skipped?.length ? `  ·  제외 ${s.skipped.length}개` : '');
   const lg = $('#log'); lg.textContent = (s.log_tail || []).join('\n'); lg.scrollTop = lg.scrollHeight;
-  if (s.state === 'done') { clearInterval(timer); showResult(); }
-  if (s.state === 'error') { clearInterval(timer); $('#phase').textContent = '오류: ' + (s.error || '처리에 실패했습니다.'); }
+  if (s.state === 'done') { stopPolling(); showResult(token); }
+  if (s.state === 'error') {
+    stopPolling();
+    $('#phase').textContent = '오류: ' + (s.error || '처리에 실패했습니다.');
+    showRecover('terminal', '이 작업은 끝나지 못했습니다. 서버의 파일은 지우지 않았습니다. 다시 확인하거나 영수증을 새로 올릴 수 있습니다.');
+  }
 }
 
 let ROWS = [], EDIT = null, DIRTY = false;
@@ -268,8 +391,31 @@ function render(){
   $('#rows').innerHTML = ROWS.map(rowHtml).join('');
 }
 
-async function showResult(){
-  const r = await fetch(`/api/jobs/${jobId}/receipts`); const d = await r.json();
+async function showResult(token){
+  if (!isCurrent(token)) return;
+  let r;
+  try { r = await fetch('/api/jobs/' + token.job + '/receipts'); }
+  catch (e) {
+    if (!isCurrent(token)) return;
+    $('#phase').textContent = '연결을 확인하지 못했습니다';
+    showRecover('transient', '결과를 가져오지 못했습니다. 작업을 지우지 않았습니다. 다시 확인해 주세요.');
+    return;
+  }
+  if (!isCurrent(token)) return;
+  if (r.status === 401) { applyAuth(token); return; }
+  if (r.status === 404) { applyMissing(token); return; }
+  if (!r.ok) {
+    $('#phase').textContent = '잠시 후 다시 확인합니다';
+    showRecover('transient', '결과를 가져오지 못했습니다. 작업을 지우지 않았습니다. 다시 확인해 주세요.');
+    return;
+  }
+  const d = await r.json().catch(() => null);
+  if (!isCurrent(token)) return;
+  if (!d || !Array.isArray(d.rows)) {
+    showRecover('transient', '결과를 읽지 못했습니다. 작업을 지우지 않았습니다. 다시 확인해 주세요.');
+    return;
+  }
+  hideRecover();
   $('#step2').classList.add('hide'); $('#step3').classList.remove('hide');
   ROWS = d.rows; DIRTY = !!d.ledger_dirty; EDIT = null; render();
 }
@@ -313,13 +459,46 @@ $('#del').onclick = async () => {
   await fetch('/api/jobs/' + jobId, {method:'DELETE'}); localStorage.removeItem('lastJob'); location.reload();
 };
 
-// 새로고침해도 마지막 작업을 이어서 보여 준다
+$('#retryPoll').onclick = () => { if (jobId) poll(); };
+$('#relogin').onclick = () => { location.href = '/app'; };
+$('#newUpload').onclick = () => {
+  watchGen += 1;
+  stopPolling();
+  jobId = null;
+  picked = [];
+  hideRecover();
+  $('#step2').classList.add('hide');
+  $('#step3').classList.add('hide');
+  $('#step1').classList.remove('hide');
+  $('#files').textContent = '';
+  $('#pbar').style.width = '0';
+  $('#go').disabled = true;
+  $('#err').textContent = '영수증을 다시 선택해 주세요.';
+};
+
+// 새로고침해도 마지막 작업을 이어서 보여 준다. 없는 작업은 진행 화면에 가두지 않는다.
 const last = localStorage.getItem('lastJob');
-if (last) { jobId = last; fetch('/api/jobs/' + last).then(r => r.ok ? r.json() : null).then(s => {
-  if (!s) return localStorage.removeItem('lastJob');
-  $('#step1').classList.add('hide'); $('#step2').classList.remove('hide');
-  poll(); timer = setInterval(poll, 2000);
-}); }
+if (last) {
+  jobId = last;
+  watchGen += 1;
+  const token = issueToken();
+  fetch('/api/jobs/' + last).then(r => {
+    if (!isCurrent(token)) return;
+    if (r.status === 404) {
+      if (localStorage.getItem('lastJob') === token.job) localStorage.removeItem('lastJob');
+      jobId = null;
+      watchGen += 1;
+      $('#err').textContent = '이전에 보던 작업을 서버에서 찾지 못했습니다. 영수증을 다시 올려 주세요.';
+      return;
+    }
+    if (r.status === 401) {
+      watchGen += 1;
+      $('#err').textContent = '접속 확인이 필요합니다. 다시 로그인한 뒤 작업을 이어서 볼 수 있습니다.';
+      return;
+    }
+    startWatching();
+  }).catch(() => { if (isCurrent(token)) startWatching(); });
+}
 </script>
 </body>
 </html>

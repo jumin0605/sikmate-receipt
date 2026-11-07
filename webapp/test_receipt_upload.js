@@ -169,10 +169,12 @@ function createDom() {
       input.checked = /(?:^|\s)checked(?:\s|=|>|$)/.test(match[1]) || /\bchecked\b/.test(match[1]);
     }
   }
-  ['drop', 'pick', 'files', 'go', 'err', 'step1', 'step2', 'step3', 'phase', 'pbar', 'pct', 'log', 'summary', 'toast', 'rows', 'dlLedger', 'dlImages', 'dlCsv', 'del']
+  ['drop', 'pick', 'files', 'go', 'err', 'step1', 'step2', 'step3', 'phase', 'pbar', 'pct', 'log', 'summary', 'toast', 'rows', 'dlLedger', 'dlImages', 'dlCsv', 'del', 'recover', 'recoverMsg', 'retryPoll', 'newUpload', 'relogin']
     .forEach(makeEl);
   elements.step2.classList.add('hide');
   elements.step3.classList.add('hide');
+  elements.recover.classList.add('hide');
+  elements.relogin.classList.add('hide');
   elements.go.disabled = true;
   elements.go.textContent = '정리 시작';
   elements.dlLedger.textContent = '지출현황 엑셀 받기';
@@ -298,10 +300,14 @@ test('page keeps job, review, export, and restore hooks', () => {
     'collectSnapshot',
     'submitJob',
     '한 번에 10개까지',
-    '10MB'
+    '10MB',
+    'id="retryPoll"',
+    'id="newUpload"',
+    'id="relogin"'
   ]) {
     assert.equal(HTML.includes(marker), true, marker);
   }
+  assert.equal(HTML.includes('보관 기간이 지났을 수 있습니다'), false);
 });
 
 test('ordinary names follow the backend extensions', () => {
@@ -855,6 +861,9 @@ test('drops outside the box work, and drops do not reset a restored or finished 
   await flush();
   assert.equal(missing.store.has('lastJob'), false);
   assert.equal(missing.elements.step1.classList.contains('hide'), false);
+  assert.equal(missing.elements.step2.classList.contains('hide'), true);
+  assert.match(missing.elements.err.textContent, /이전에 보던 작업을 서버에서 찾지 못했습니다/);
+  assert.equal(missing.intervals.length, 0);
 
   const queued = boot({
     lastJob: JOB,
@@ -943,8 +952,432 @@ test('delete asks first and a lost job poll explains that the job is gone', asyn
   await flush();
   await page.elements.go.onclick();
   await flush();
-  assert.equal(page.elements.phase.textContent, '작업을 찾을 수 없습니다. (보관 기간이 지났을 수 있습니다)');
+  assert.equal(page.elements.phase.textContent, '작업을 서버에서 찾지 못했습니다');
+  assert.match(page.elements.recoverMsg.textContent, /복구할 수 없습니다/);
+  assert.equal(page.elements.recover.classList.contains('hide'), false);
+  assert.equal(page.store.has('lastJob'), false);
   assert.equal(page.cleared.length > 0, true);
+  assert.equal(page.elements.phase.textContent.includes('보관 기간'), false);
+});
+
+function runningStatus() {
+  return { state: 'running', phase: '사진 정리 중', progress: 1, file_count: 10, skipped: [], log_tail: [], queue_ahead: 0 };
+}
+
+test('a restored missing job stays on the upload form without a timer', async () => {
+  const page = boot({ lastJob: JOB, fetch: async () => jsonResult(404, { detail: '없는 작업입니다.' }) });
+  await flush();
+  assert.equal(page.store.has('lastJob'), false);
+  assert.equal(page.elements.step1.classList.contains('hide'), false);
+  assert.equal(page.elements.step2.classList.contains('hide'), true);
+  assert.match(page.elements.err.textContent, /이전에 보던 작업을 서버에서 찾지 못했습니다/);
+  assert.equal(page.intervals.length, 0);
+  assert.equal(page.elements.phase.textContent.includes('보관 기간'), false);
+});
+
+test('a job that disappears while polling can be replaced by a new upload', async () => {
+  let mode = 'running';
+  const nextJob = 'abcdef0123456789';
+  const page = boot({
+    lastJob: JOB,
+    fetch: async (url, opts) => {
+      if (opts.method === 'POST') return jsonResult(200, { job_id: nextJob, file_count: 1, skipped: [] });
+      if (mode === '404') return jsonResult(404, { detail: '없는 작업입니다.' });
+      if (String(url).endsWith('/receipts')) return jsonResult(200, { rows: [sampleRow()], ledger_dirty: false });
+      if (mode === 'done') return jsonResult(200, { state: 'done', phase: '완료', progress: 100, file_count: 1, skipped: [], log_tail: [] });
+      return jsonResult(200, runningStatus());
+    }
+  });
+  await flush();
+  assert.equal(page.elements.pbar.style.width, '1%');
+  assert.match(page.elements.pct.textContent, /영수증 10개/);
+  assert.equal(page.store.get('lastJob'), JOB);
+  const intervalId = page.intervals.at(-1).id;
+  mode = '404';
+  await page.intervals.at(-1).fn();
+  await flush();
+  assert.equal(page.elements.phase.textContent, '작업을 서버에서 찾지 못했습니다');
+  assert.match(page.elements.recoverMsg.textContent, /복구할 수 없습니다/);
+  assert.equal(page.elements.pct.textContent, '서버에 남은 진행 정보가 없습니다.');
+  assert.equal(page.elements.recover.classList.contains('hide'), false);
+  assert.equal(page.store.has('lastJob'), false);
+  assert.equal(page.cleared.includes(intervalId), true);
+  assert.equal(page.elements.step2.classList.contains('hide'), false);
+  page.elements.newUpload.onclick();
+  assert.equal(page.elements.step1.classList.contains('hide'), false);
+  assert.equal(page.elements.step2.classList.contains('hide'), true);
+  mode = 'done';
+  page.elements.pick.files = [fileNamed('again.jpg', 'image/jpeg')];
+  page.elements.pick.dispatchEvent({ type: 'change' });
+  await flush();
+  await page.elements.go.onclick();
+  await flush();
+  assert.deepEqual(postedNames(page.calls), ['again.jpg']);
+  assert.equal(page.store.get('lastJob'), nextJob);
+  assert.match(page.elements.rows.innerHTML, /한밭마트/);
+  assert.equal(page.elements.step3.classList.contains('hide'), false);
+});
+
+test('network and 500 failures keep the job, the timer, and the last progress', async () => {
+  let mode = 'running';
+  const page = boot({
+    lastJob: JOB,
+    fetch: async () => {
+      if (mode === '500') return jsonResult(500, { detail: 'temporary' });
+      if (mode === 'down') throw new Error('offline');
+      return jsonResult(200, runningStatus());
+    }
+  });
+  await flush();
+  const intervalId = page.intervals.at(-1).id;
+  mode = '500';
+  await page.intervals.at(-1).fn();
+  await flush();
+  assert.equal(page.elements.phase.textContent, '잠시 후 다시 확인합니다');
+  assert.match(page.elements.recoverMsg.textContent, /지우지 않았고/);
+  assert.equal(page.elements.phase.textContent.includes('찾지 못했습니다'), false);
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.cleared.includes(intervalId), false);
+  assert.match(page.elements.pct.textContent, /영수증 10개/);
+  mode = 'down';
+  await page.intervals.at(-1).fn();
+  await flush();
+  assert.equal(page.elements.phase.textContent, '연결을 확인하지 못했습니다');
+  assert.match(page.elements.recoverMsg.textContent, /네트워크/);
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.cleared.includes(intervalId), false);
+  mode = 'running';
+  page.elements.retryPoll.onclick();
+  await flush();
+  assert.equal(page.elements.phase.textContent, '사진 정리 중');
+  assert.equal(page.elements.recover.classList.contains('hide'), true);
+  assert.equal(page.elements.pbar.style.width, '1%');
+  assert.equal(page.store.get('lastJob'), JOB);
+});
+
+test('an auth failure keeps the job and asks for login', async () => {
+  let mode = 'running';
+  const page = boot({
+    lastJob: JOB,
+    fetch: async () => mode === 'running'
+      ? jsonResult(200, runningStatus())
+      : jsonResult(401, { detail: '접속 코드가 필요합니다.' })
+  });
+  await flush();
+  mode = '401';
+  await page.intervals.at(-1).fn();
+  await flush();
+  assert.equal(page.elements.phase.textContent, '로그인이 필요합니다');
+  assert.match(page.elements.recoverMsg.textContent, /다시 로그인/);
+  assert.equal(page.elements.phase.textContent.includes('보관 기간'), false);
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.elements.relogin.classList.contains('hide'), false);
+  assert.equal(page.elements.newUpload.classList.contains('hide'), true);
+  assert.equal(page.cleared.includes(page.intervals.at(-1).id), true);
+  page.elements.relogin.onclick();
+  assert.equal(page.location.href, '/app');
+});
+
+test('a terminal processing error keeps the saved job id', async () => {
+  const page = boot({
+    lastJob: JOB,
+    fetch: async () => jsonResult(200, {
+      state: 'error', phase: '오류', error: '처리에 실패했습니다.', progress: 1, file_count: 10, skipped: [], log_tail: []
+    })
+  });
+  await flush();
+  assert.match(page.elements.phase.textContent, /오류: 처리에 실패했습니다/);
+  assert.match(page.elements.recoverMsg.textContent, /서버의 파일은 지우지 않았습니다/);
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.cleared.length > 0, true);
+  page.elements.newUpload.onclick();
+  assert.equal(page.elements.step1.classList.contains('hide'), false);
+  assert.equal(page.store.get('lastJob'), JOB);
+});
+
+test('restoring while signed out does not open the progress screen', async () => {
+  const page = boot({
+    lastJob: JOB,
+    fetch: async () => jsonResult(401, { detail: '접속 코드가 필요합니다.' })
+  });
+  await flush();
+  assert.match(page.elements.err.textContent, /다시 로그인한 뒤/);
+  assert.equal(page.elements.step2.classList.contains('hide'), true);
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.intervals.length, 0);
+});
+
+test('stale 404, 401, done, and result responses cannot replace the current job', async () => {
+  const nextJob = 'abcdef0123456789';
+  const waiting = [];
+  let hold = false;
+  const page = boot({
+    lastJob: JOB,
+    fetch(url, opts) {
+      const method = (opts && opts.method) || 'GET';
+      if (method === 'POST') return jsonResult(200, { job_id: nextJob, file_count: 1, skipped: [] });
+      if (hold) return new Promise(resolve => waiting.push({ url: String(url), resolve }));
+      return jsonResult(200, runningStatus());
+    }
+  });
+  await flush();
+  hold = true;
+  const statusPoll = page.sandbox.poll();
+  const resultRows = [{ ...sampleRow(), vendor: '옛마트' }];
+  await flush();
+  page.elements.newUpload.onclick();
+  page.elements.pick.files = [fileNamed('again.jpg', 'image/jpeg')];
+  page.elements.pick.dispatchEvent({ type: 'change' });
+  await flush();
+  const started = page.elements.go.onclick();
+  await flush();
+  assert.equal(page.store.get('lastJob'), nextJob);
+  const newInterval = page.intervals.at(-1).id;
+  const oldStatus = waiting.find(item => item.url.endsWith('/' + JOB));
+  oldStatus.resolve(jsonResult(404, { detail: '없는 작업입니다.' }));
+  await statusPoll;
+  await flush();
+  assert.equal(page.store.get('lastJob'), nextJob);
+  assert.equal(page.cleared.includes(newInterval), false);
+  assert.equal(page.elements.phase.textContent.includes('찾지 못했습니다'), false);
+  assert.equal(page.elements.relogin.classList.contains('hide'), true);
+
+  const oldAuth = page.sandbox.poll();
+  await flush();
+  const authCall = waiting.at(-1);
+  page.elements.newUpload.onclick();
+  page.elements.pick.files = [fileNamed('third.jpg', 'image/jpeg')];
+  page.elements.pick.dispatchEvent({ type: 'change' });
+  await flush();
+  const restarted = page.elements.go.onclick();
+  await flush();
+  authCall.resolve(jsonResult(401, { detail: '접속 코드가 필요합니다.' }));
+  await oldAuth;
+  await flush();
+  assert.equal(page.store.get('lastJob'), nextJob);
+  assert.equal(page.elements.phase.textContent.includes('로그인'), false);
+
+  const donePoll = page.sandbox.poll();
+  await flush();
+  const doneCall = waiting.filter(item => item.url.endsWith('/' + nextJob)).at(-1);
+  doneCall.resolve(jsonResult(200, { state: 'done', phase: '완료', progress: 100, file_count: 1, skipped: [], log_tail: [] }));
+  await flush();
+  const receiptCall = waiting.find(item => item.url.includes('/receipts'));
+  page.elements.newUpload.onclick();
+  page.store.set('lastJob', nextJob);
+  receiptCall.resolve(jsonResult(200, { rows: resultRows, ledger_dirty: false }));
+  await donePoll;
+  await flush();
+  assert.equal(page.elements.rows.innerHTML.includes('옛마트'), false);
+  assert.equal(page.elements.step3.classList.contains('hide'), true);
+  assert.equal(page.store.get('lastJob'), nextJob);
+  assert.equal(page.elements.step1.classList.contains('hide'), false);
+});
+
+test('an older poll cannot clear or restore lastJob around a newer poll', async () => {
+  const waiting = [];
+  let hold = false;
+  const page = boot({
+    lastJob: JOB,
+    fetch() {
+      if (hold) return new Promise(resolve => waiting.push(resolve));
+      return jsonResult(200, runningStatus());
+    }
+  });
+  await flush();
+  hold = true;
+  const older = page.sandbox.poll();
+  const newer = page.sandbox.poll();
+  await flush();
+  waiting[1](jsonResult(200, { ...runningStatus(), progress: 40 }));
+  await newer;
+  await flush();
+  assert.equal(page.elements.pbar.style.width, '40%');
+  waiting[0](jsonResult(404, { detail: '없는 작업입니다.' }));
+  await older;
+  await flush();
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.elements.pbar.style.width, '40%');
+  assert.equal(page.elements.phase.textContent.includes('찾지 못했습니다'), false);
+
+  const lateProgress = page.sandbox.poll();
+  const lateMissing = page.sandbox.poll();
+  await flush();
+  waiting.at(-1)(jsonResult(404, { detail: '없는 작업입니다.' }));
+  await lateMissing;
+  await flush();
+  assert.equal(page.store.has('lastJob'), false);
+  waiting.at(-2)(jsonResult(200, runningStatus()));
+  await lateProgress;
+  await flush();
+  assert.equal(page.store.has('lastJob'), false);
+  assert.equal(page.elements.phase.textContent, '작업을 서버에서 찾지 못했습니다');
+});
+
+test('a slow restore 404 does not clear the job started meanwhile', async () => {
+  const nextJob = 'abcdef0123456789';
+  let restore = null;
+  let sawRestore = false;
+  const page = boot({
+    lastJob: JOB,
+    fetch(url, opts) {
+      const method = (opts && opts.method) || 'GET';
+      if (method === 'POST') return jsonResult(200, { job_id: nextJob, file_count: 1, skipped: [] });
+      if (!sawRestore) {
+        sawRestore = true;
+        return new Promise(resolve => { restore = resolve; });
+      }
+      return jsonResult(200, { ...runningStatus(), file_count: 2, progress: 3 });
+    }
+  });
+  for (let i = 0; i < 5 && !restore; i++) await flush();
+  assert.ok(restore);
+  page.elements.pick.files = [fileNamed('again.jpg', 'image/jpeg')];
+  page.elements.pick.dispatchEvent({ type: 'change' });
+  await flush();
+  const started = page.elements.go.onclick();
+  await flush();
+  assert.equal(page.store.get('lastJob'), nextJob);
+  restore(jsonResult(404, { detail: '없는 작업입니다.' }));
+  await started;
+  await flush();
+  assert.equal(page.store.get('lastJob'), nextJob);
+  assert.equal(page.elements.step1.classList.contains('hide'), true);
+  assert.match(page.elements.pct.textContent, /영수증 2개/);
+});
+
+test('result 401 keeps the job and asks for login, while 500 stays retryable', async () => {
+  const auth = boot({
+    lastJob: JOB,
+    fetch(url) {
+      if (String(url).endsWith('/receipts')) return jsonResult(401, { detail: '접속 코드가 필요합니다.' });
+      return jsonResult(200, { state: 'done', phase: '완료', progress: 100, file_count: 1, skipped: [], log_tail: [] });
+    }
+  });
+  await flush();
+  assert.equal(auth.elements.phase.textContent, '로그인이 필요합니다');
+  assert.match(auth.elements.recoverMsg.textContent, /다시 로그인/);
+  assert.equal(auth.elements.relogin.classList.contains('hide'), false);
+  assert.equal(auth.elements.newUpload.classList.contains('hide'), true);
+  assert.equal(auth.store.get('lastJob'), JOB);
+  assert.equal(auth.elements.step3.classList.contains('hide'), true);
+  assert.equal(auth.elements.rows.innerHTML.includes('한밭마트'), false);
+
+  let receipts = '500';
+  const retry = boot({
+    lastJob: JOB,
+    fetch(url) {
+      if (String(url).endsWith('/receipts')) {
+        if (receipts === '500') return jsonResult(500, { detail: 'temporary' });
+        return jsonResult(200, { rows: [sampleRow()], ledger_dirty: false });
+      }
+      return jsonResult(200, { state: 'done', phase: '완료', progress: 100, file_count: 1, skipped: [], log_tail: [] });
+    }
+  });
+  await flush();
+  assert.equal(retry.elements.phase.textContent, '잠시 후 다시 확인합니다');
+  assert.match(retry.elements.recoverMsg.textContent, /지우지 않았습니다/);
+  assert.equal(retry.elements.phase.textContent.includes('로그인'), false);
+  assert.equal(retry.elements.relogin.classList.contains('hide'), true);
+  assert.equal(retry.store.get('lastJob'), JOB);
+  receipts = '200';
+  retry.elements.retryPoll.onclick();
+  await flush();
+  assert.match(retry.elements.rows.innerHTML, /한밭마트/);
+  assert.equal(retry.elements.step3.classList.contains('hide'), false);
+  assert.equal(retry.store.get('lastJob'), JOB);
+});
+
+test('polls slower than the 2 second interval still render progress and done', async () => {
+  const waiting = [];
+  let hold = false;
+  const page = boot({
+    lastJob: JOB,
+    fetch(url) {
+      if (hold || String(url).endsWith('/receipts')) {
+        return new Promise(resolve => waiting.push({ url: String(url), resolve }));
+      }
+      return jsonResult(200, runningStatus());
+    }
+  });
+  await flush();
+  hold = true;
+  const first = page.intervals.at(-1).fn();
+  await flush();
+  const second = page.intervals.at(-1).fn();
+  await flush();
+  assert.equal(waiting.length, 2);
+  waiting[0].resolve(jsonResult(200, { ...runningStatus(), progress: 35 }));
+  await first;
+  await flush();
+  assert.equal(page.elements.pbar.style.width, '35%');
+  assert.equal(page.store.get('lastJob'), JOB);
+  waiting[1].resolve(jsonResult(200, { state: 'done', phase: '완료', progress: 100, file_count: 10, skipped: [], log_tail: [] }));
+  await second;
+  await flush();
+  const receipt = waiting.find(item => item.url.includes('/receipts'));
+  assert.ok(receipt);
+  receipt.resolve(jsonResult(200, { rows: [sampleRow()], ledger_dirty: false }));
+  await flush();
+  assert.match(page.elements.rows.innerHTML, /한밭마트/);
+  assert.equal(page.elements.step3.classList.contains('hide'), false);
+  assert.equal(page.store.get('lastJob'), JOB);
+});
+
+test('a timed out poll keeps the job, ignores its late body, and a retry can finish', async () => {
+  const waiting = [];
+  let mode = 'fast';
+  const nextJob = 'abcdef0123456789';
+  const page = boot({
+    lastJob: JOB,
+    fetch(url, opts) {
+      const method = (opts && opts.method) || 'GET';
+      if (method === 'POST') return jsonResult(200, { job_id: nextJob, file_count: 1, skipped: [] });
+      if (mode === 'hold') return new Promise(resolve => waiting.push({ url: String(url), resolve }));
+      if (String(url).endsWith('/receipts')) return jsonResult(200, { rows: [sampleRow()], ledger_dirty: false });
+      if (mode === 'done') return jsonResult(200, { state: 'done', phase: '완료', progress: 100, file_count: 1, skipped: [], log_tail: [] });
+      return jsonResult(200, { ...runningStatus(), progress: 55 });
+    }
+  });
+  await flush();
+  mode = 'hold';
+  const slow = page.sandbox.poll();
+  await flush();
+  const timeout = page.timeouts.filter(item => item.ms === 15000).at(-1);
+  assert.ok(timeout);
+  timeout.fn();
+  assert.equal(page.elements.phase.textContent, '잠시 후 다시 확인합니다');
+  assert.match(page.elements.recoverMsg.textContent, /응답이 늦습니다/);
+  assert.equal(page.store.get('lastJob'), JOB);
+  waiting[0].resolve(jsonResult(404, { detail: '없는 작업입니다.' }));
+  await slow;
+  await flush();
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.elements.phase.textContent.includes('찾지 못했습니다'), false);
+  mode = 'fast';
+  page.elements.retryPoll.onclick();
+  await flush();
+  assert.equal(page.elements.pbar.style.width, '55%');
+  assert.equal(page.store.get('lastJob'), JOB);
+
+  mode = 'hold';
+  const oldJobPoll = page.sandbox.poll();
+  await flush();
+  const oldCall = waiting.at(-1);
+  mode = 'done';
+  page.elements.newUpload.onclick();
+  page.elements.pick.files = [fileNamed('again.jpg', 'image/jpeg')];
+  page.elements.pick.dispatchEvent({ type: 'change' });
+  await flush();
+  const started = page.elements.go.onclick();
+  await started;
+  await flush();
+  oldCall.resolve(jsonResult(404, { detail: '없는 작업입니다.' }));
+  await oldJobPoll;
+  await flush();
+  assert.equal(page.store.get('lastJob'), nextJob);
+  assert.match(page.elements.rows.innerHTML, /한밭마트/);
+  assert.equal(page.elements.phase.textContent.includes('찾지 못했습니다'), false);
 });
 
 test('patch failure alerts and does not pretend the row was saved', async () => {
