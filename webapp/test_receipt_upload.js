@@ -169,10 +169,12 @@ function createDom() {
       input.checked = /(?:^|\s)checked(?:\s|=|>|$)/.test(match[1]) || /\bchecked\b/.test(match[1]);
     }
   }
-  ['drop', 'pick', 'files', 'go', 'err', 'step1', 'step2', 'step3', 'phase', 'pbar', 'pct', 'log', 'summary', 'toast', 'rows', 'dlLedger', 'dlImages', 'dlCsv', 'del']
+  ['drop', 'pick', 'files', 'go', 'err', 'step1', 'step2', 'step3', 'phase', 'pbar', 'pct', 'log', 'summary', 'toast', 'rows', 'dlLedger', 'dlImages', 'dlCsv', 'del', 'recover', 'recoverMsg', 'retryPoll', 'newUpload', 'relogin']
     .forEach(makeEl);
   elements.step2.classList.add('hide');
   elements.step3.classList.add('hide');
+  elements.recover.classList.add('hide');
+  elements.relogin.classList.add('hide');
   elements.go.disabled = true;
   elements.go.textContent = '정리 시작';
   elements.dlLedger.textContent = '지출현황 엑셀 받기';
@@ -298,10 +300,14 @@ test('page keeps job, review, export, and restore hooks', () => {
     'collectSnapshot',
     'submitJob',
     '한 번에 10개까지',
-    '10MB'
+    '10MB',
+    'id="retryPoll"',
+    'id="newUpload"',
+    'id="relogin"'
   ]) {
     assert.equal(HTML.includes(marker), true, marker);
   }
+  assert.equal(HTML.includes('보관 기간이 지났을 수 있습니다'), false);
 });
 
 test('ordinary names follow the backend extensions', () => {
@@ -855,6 +861,9 @@ test('drops outside the box work, and drops do not reset a restored or finished 
   await flush();
   assert.equal(missing.store.has('lastJob'), false);
   assert.equal(missing.elements.step1.classList.contains('hide'), false);
+  assert.equal(missing.elements.step2.classList.contains('hide'), true);
+  assert.match(missing.elements.err.textContent, /이전에 보던 작업을 서버에서 찾지 못했습니다/);
+  assert.equal(missing.intervals.length, 0);
 
   const queued = boot({
     lastJob: JOB,
@@ -943,8 +952,159 @@ test('delete asks first and a lost job poll explains that the job is gone', asyn
   await flush();
   await page.elements.go.onclick();
   await flush();
-  assert.equal(page.elements.phase.textContent, '작업을 찾을 수 없습니다. (보관 기간이 지났을 수 있습니다)');
+  assert.equal(page.elements.phase.textContent, '작업을 서버에서 찾지 못했습니다');
+  assert.match(page.elements.recoverMsg.textContent, /복구할 수 없습니다/);
+  assert.equal(page.elements.recover.classList.contains('hide'), false);
+  assert.equal(page.store.has('lastJob'), false);
   assert.equal(page.cleared.length > 0, true);
+  assert.equal(page.elements.phase.textContent.includes('보관 기간'), false);
+});
+
+function runningStatus() {
+  return { state: 'running', phase: '사진 정리 중', progress: 1, file_count: 10, skipped: [], log_tail: [], queue_ahead: 0 };
+}
+
+test('a restored missing job stays on the upload form without a timer', async () => {
+  const page = boot({ lastJob: JOB, fetch: async () => jsonResult(404, { detail: '없는 작업입니다.' }) });
+  await flush();
+  assert.equal(page.store.has('lastJob'), false);
+  assert.equal(page.elements.step1.classList.contains('hide'), false);
+  assert.equal(page.elements.step2.classList.contains('hide'), true);
+  assert.match(page.elements.err.textContent, /이전에 보던 작업을 서버에서 찾지 못했습니다/);
+  assert.equal(page.intervals.length, 0);
+  assert.equal(page.elements.phase.textContent.includes('보관 기간'), false);
+});
+
+test('a job that disappears while polling can be replaced by a new upload', async () => {
+  let mode = 'running';
+  const nextJob = 'abcdef0123456789';
+  const page = boot({
+    lastJob: JOB,
+    fetch: async (url, opts) => {
+      if (opts.method === 'POST') return jsonResult(200, { job_id: nextJob, file_count: 1, skipped: [] });
+      if (mode === '404') return jsonResult(404, { detail: '없는 작업입니다.' });
+      if (String(url).endsWith('/receipts')) return jsonResult(200, { rows: [sampleRow()], ledger_dirty: false });
+      if (mode === 'done') return jsonResult(200, { state: 'done', phase: '완료', progress: 100, file_count: 1, skipped: [], log_tail: [] });
+      return jsonResult(200, runningStatus());
+    }
+  });
+  await flush();
+  assert.equal(page.elements.pbar.style.width, '1%');
+  assert.match(page.elements.pct.textContent, /영수증 10개/);
+  assert.equal(page.store.get('lastJob'), JOB);
+  const intervalId = page.intervals.at(-1).id;
+  mode = '404';
+  await page.intervals.at(-1).fn();
+  await flush();
+  assert.equal(page.elements.phase.textContent, '작업을 서버에서 찾지 못했습니다');
+  assert.match(page.elements.recoverMsg.textContent, /복구할 수 없습니다/);
+  assert.equal(page.elements.pct.textContent, '서버에 남은 진행 정보가 없습니다.');
+  assert.equal(page.elements.recover.classList.contains('hide'), false);
+  assert.equal(page.store.has('lastJob'), false);
+  assert.equal(page.cleared.includes(intervalId), true);
+  assert.equal(page.elements.step2.classList.contains('hide'), false);
+  page.elements.newUpload.onclick();
+  assert.equal(page.elements.step1.classList.contains('hide'), false);
+  assert.equal(page.elements.step2.classList.contains('hide'), true);
+  mode = 'done';
+  page.elements.pick.files = [fileNamed('again.jpg', 'image/jpeg')];
+  page.elements.pick.dispatchEvent({ type: 'change' });
+  await flush();
+  await page.elements.go.onclick();
+  await flush();
+  assert.deepEqual(postedNames(page.calls), ['again.jpg']);
+  assert.equal(page.store.get('lastJob'), nextJob);
+  assert.match(page.elements.rows.innerHTML, /한밭마트/);
+  assert.equal(page.elements.step3.classList.contains('hide'), false);
+});
+
+test('network and 500 failures keep the job, the timer, and the last progress', async () => {
+  let mode = 'running';
+  const page = boot({
+    lastJob: JOB,
+    fetch: async () => {
+      if (mode === '500') return jsonResult(500, { detail: 'temporary' });
+      if (mode === 'down') throw new Error('offline');
+      return jsonResult(200, runningStatus());
+    }
+  });
+  await flush();
+  const intervalId = page.intervals.at(-1).id;
+  mode = '500';
+  await page.intervals.at(-1).fn();
+  await flush();
+  assert.equal(page.elements.phase.textContent, '잠시 후 다시 확인합니다');
+  assert.match(page.elements.recoverMsg.textContent, /지우지 않았고/);
+  assert.equal(page.elements.phase.textContent.includes('찾지 못했습니다'), false);
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.cleared.includes(intervalId), false);
+  assert.match(page.elements.pct.textContent, /영수증 10개/);
+  mode = 'down';
+  await page.intervals.at(-1).fn();
+  await flush();
+  assert.equal(page.elements.phase.textContent, '연결을 확인하지 못했습니다');
+  assert.match(page.elements.recoverMsg.textContent, /네트워크/);
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.cleared.includes(intervalId), false);
+  mode = 'running';
+  page.elements.retryPoll.onclick();
+  await flush();
+  assert.equal(page.elements.phase.textContent, '사진 정리 중');
+  assert.equal(page.elements.recover.classList.contains('hide'), true);
+  assert.equal(page.elements.pbar.style.width, '1%');
+  assert.equal(page.store.get('lastJob'), JOB);
+});
+
+test('an auth failure keeps the job and asks for login', async () => {
+  let mode = 'running';
+  const page = boot({
+    lastJob: JOB,
+    fetch: async () => mode === 'running'
+      ? jsonResult(200, runningStatus())
+      : jsonResult(401, { detail: '접속 코드가 필요합니다.' })
+  });
+  await flush();
+  mode = '401';
+  await page.intervals.at(-1).fn();
+  await flush();
+  assert.equal(page.elements.phase.textContent, '로그인이 필요합니다');
+  assert.match(page.elements.recoverMsg.textContent, /다시 로그인/);
+  assert.equal(page.elements.phase.textContent.includes('보관 기간'), false);
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.elements.relogin.classList.contains('hide'), false);
+  assert.equal(page.elements.newUpload.classList.contains('hide'), true);
+  assert.equal(page.cleared.includes(page.intervals.at(-1).id), true);
+  page.elements.relogin.onclick();
+  assert.equal(page.location.href, '/app');
+});
+
+test('a terminal processing error keeps the saved job id', async () => {
+  const page = boot({
+    lastJob: JOB,
+    fetch: async () => jsonResult(200, {
+      state: 'error', phase: '오류', error: '처리에 실패했습니다.', progress: 1, file_count: 10, skipped: [], log_tail: []
+    })
+  });
+  await flush();
+  assert.match(page.elements.phase.textContent, /오류: 처리에 실패했습니다/);
+  assert.match(page.elements.recoverMsg.textContent, /서버의 파일은 지우지 않았습니다/);
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.cleared.length > 0, true);
+  page.elements.newUpload.onclick();
+  assert.equal(page.elements.step1.classList.contains('hide'), false);
+  assert.equal(page.store.get('lastJob'), JOB);
+});
+
+test('restoring while signed out does not open the progress screen', async () => {
+  const page = boot({
+    lastJob: JOB,
+    fetch: async () => jsonResult(401, { detail: '접속 코드가 필요합니다.' })
+  });
+  await flush();
+  assert.match(page.elements.err.textContent, /다시 로그인한 뒤/);
+  assert.equal(page.elements.step2.classList.contains('hide'), true);
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.intervals.length, 0);
 });
 
 test('patch failure alerts and does not pretend the row was saved', async () => {

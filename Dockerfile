@@ -3,6 +3,7 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8 \
     DATA_DIR=/tmp/receipt_data
+# /tmp 는 재배포·재시작 때 비워진다. 진행 중 작업은 디스크와 함께 사라진다.
 
 WORKDIR /app
 

@@ -39,6 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from env_config import load_project_env
+from job_resume import classify_on_restart
 
 HERE = Path(__file__).resolve().parent
 load_project_env(HERE.parent)
@@ -225,6 +226,32 @@ def worker():
 
 
 threading.Thread(target=worker, daemon=True).start()
+
+
+def _resume_jobs_on_startup():
+    """프로세스만 다시 떴고 디스크에 원본이 남아 있으면 그 작업만 다시 줄에 넣는다.
+
+    파일을 지우지 않는다. 재배포로 데이터 디렉터리가 비면 복구할 항목이 없다.
+    """
+    resumable, stalled = classify_on_restart(JOBS_DIR)
+    for job_id in resumable:
+        try:
+            write_status(job_id, state="queued", phase="서버가 다시 시작되어 대기 중", progress=0)
+            add_log(job_id, "[재시작] 디스크에 원본이 남아 있어 다시 처리합니다.")
+            work_q.put(job_id)
+        except OSError:
+            continue
+    for job_id in stalled:
+        try:
+            write_status(
+                job_id, state="error", phase="오류",
+                error="서버가 다시 시작되었지만 원본 파일이 없어 이어서 처리하지 못했습니다.",
+            )
+        except OSError:
+            continue
+
+
+_resume_jobs_on_startup()
 
 
 # ---------------------------------------------------------------------------
