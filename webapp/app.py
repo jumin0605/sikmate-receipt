@@ -12,6 +12,7 @@
   MAX_FILES         한 번에 올릴 수 있는 파일 수 (기본 60)
   MAX_FILE_MB       파일 하나 크기 상한 (기본 25)
   DAILY_FILE_LIMIT  하루 전체 처리 장수 상한. 요금 폭주 방지 (기본 400)
+  RECEIPT_MAX_SIDE  사진 긴 변 상한(px). 메모리 절약용 (기본 3000, 0이면 끔)
 """
 
 from __future__ import annotations
@@ -59,6 +60,9 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 # (영수증_정리_도구.py 는 import 될 때 환경변수를 읽으므로 load_core() 보다 먼저 설정)
 MODEL = os.environ.setdefault("GEMINI_MODEL", "gemini-3.8-flash")
 PRO_MODEL = os.environ.setdefault("GEMINI_PRO_MODEL", "gemini-4-argon")
+# 서버는 메모리가 작아서(512MB) 휴대폰 원본 사진(4000px 이상)을 그대로 처리하면 한 장에도 한도를 넘는다.
+# 사진을 읽을 때 긴 변을 이 값으로 줄인다. 0이면 줄이지 않는다. (영수증_정리_도구.py 가 import 될 때 읽음)
+os.environ.setdefault("RECEIPT_MAX_SIDE", "3000")
 
 
 def _decode_filename(name: str) -> str:

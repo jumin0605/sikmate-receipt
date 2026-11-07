@@ -77,6 +77,22 @@ PDF_EXTS = {".pdf"}
 # 파일만 커진다. 200이면 원본보다 커서 손실이 없고 용량과 처리 시간이 크게 준다.
 PDF_RENDER_DPI = 200
 JPEG_QUALITY = 95        # 글자 가장자리가 뭉개지지 않는 선
+# 사진을 읽을 때 긴 변을 이 값으로 줄인다 (0이면 줄이지 않음). 휴대폰 원본(4000px 이상)을 그대로
+# 처리하면 사진 한 장에 메모리가 600~800MB까지 올라가므로, 메모리가 작은 서버에서만 켠다.
+# 판독에는 긴 변 1600px(재판독 2400px)만 쓰므로 3000px이면 글씨 판독에는 영향이 없다.
+LOAD_MAX_SIDE = int(os.environ.get("RECEIPT_MAX_SIDE", "0") or 0)
+
+
+def cap_side(img):
+    """BGR ndarray 의 긴 변이 LOAD_MAX_SIDE 보다 크면 비율을 지켜 줄인다."""
+    if LOAD_MAX_SIDE <= 0:
+        return img
+    h, w = img.shape[:2]
+    m = max(h, w)
+    if m <= LOAD_MAX_SIDE:
+        return img
+    r = LOAD_MAX_SIDE / m
+    return cv2.resize(img, (max(1, round(w * r)), max(1, round(h * r))), interpolation=cv2.INTER_AREA)
 
 
 # ---------------------------------------------------------------------------
@@ -112,12 +128,14 @@ def load_pages(path):
         else:
             raise RuntimeError(
                 "PDF를 읽으려면 pymupdf 또는 pypdfium2가 필요합니다: pip install pymupdf")
-        return pages
+        return [cap_side(p) for p in pages]
 
     # EXIF 회전 정보를 먼저 적용한 뒤 OpenCV로 넘긴다
     with Image.open(path) as im:
         im = ImageOps.exif_transpose(im).convert("RGB")
-        return [cv2.cvtColor(np.array(im), cv2.COLOR_RGB2BGR)]
+        bgr = cv2.cvtColor(np.array(im), cv2.COLOR_RGB2BGR)
+        del im
+        return [cap_side(bgr)]
 
 
 def save_pages(pages, out_path, to_pdf=False, jpeg_quality=JPEG_QUALITY):
