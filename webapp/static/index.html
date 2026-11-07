@@ -231,16 +231,23 @@ if (!uploadApi) {
 
 let watchGen = 0;
 let pollSeq = 0;
+let lastAppliedSeq = 0;
+const POLL_TIMEOUT_MS = 15000;
 function stopPolling() {
   if (timer) clearInterval(timer);
   timer = null;
 }
 function issueToken() {
   pollSeq += 1;
-  return { watch: watchGen, seq: pollSeq, job: jobId };
+  return { watch: watchGen, seq: pollSeq, job: jobId, abandoned: false, settled: false };
 }
+// 이미 적용한 응답보다 오래된 것만 버린다. 2초마다 새 요청을 시작해도
+// 아직 적용되지 않은 성공 응답은 늦어도 반영된다.
 function isCurrent(token) {
-  return !!(token && token.watch === watchGen && token.seq === pollSeq && token.job && token.job === jobId);
+  return !!(token && !token.abandoned && token.watch === watchGen && token.seq >= lastAppliedSeq && token.job && token.job === jobId);
+}
+function noteApplied(token) {
+  if (token && token.seq > lastAppliedSeq) lastAppliedSeq = token.seq;
 }
 function setHidden(el, hidden) {
   if (hidden) el.classList.add('hide');
@@ -264,6 +271,7 @@ function hideRecover() {
 }
 function applyAuth(token) {
   if (!isCurrent(token)) return;
+  noteApplied(token);
   stopPolling();
   watchGen += 1;
   $('#phase').textContent = '로그인이 필요합니다';
@@ -271,6 +279,7 @@ function applyAuth(token) {
 }
 function applyMissing(token) {
   if (!isCurrent(token)) return;
+  noteApplied(token);
   if (localStorage.getItem('lastJob') === token.job) localStorage.removeItem('lastJob');
   stopPolling();
   watchGen += 1;
@@ -288,22 +297,36 @@ function startWatching() {
   poll();
   timer = setInterval(poll, 2000);
 }
+function notePollTimeout(token) {
+  if (token.settled) return;
+  token.abandoned = true;
+  if (token.watch !== watchGen || token.job !== jobId) return;
+  if (token.seq < lastAppliedSeq || token.seq !== pollSeq) return;
+  $('#phase').textContent = '잠시 후 다시 확인합니다';
+  showRecover('transient', '응답이 늦습니다. 작업을 지우지 않았고, 다시 확인합니다.');
+}
 async function poll(){
   if (!jobId) return;
   const token = issueToken();
+  const timeoutId = setTimeout(() => notePollTimeout(token), POLL_TIMEOUT_MS);
   let response;
   try {
     response = await fetch('/api/jobs/' + token.job);
   } catch (e) {
     if (!isCurrent(token)) return;
+    noteApplied(token);
     $('#phase').textContent = '연결을 확인하지 못했습니다';
     showRecover('transient', '네트워크에 연결하지 못했습니다. 작업을 지우지 않았고, 자동으로 다시 확인합니다.');
     return;
+  } finally {
+    token.settled = true;
+    clearTimeout(timeoutId);
   }
   if (!isCurrent(token)) return;
   if (response.status === 401) { applyAuth(token); return; }
   if (response.status === 404) { applyMissing(token); return; }
   if (!response.ok) {
+    noteApplied(token);
     $('#phase').textContent = '잠시 후 다시 확인합니다';
     showRecover('transient', '서버가 잠시 응답하지 못했습니다. 작업을 지우지 않았고, 자동으로 다시 확인합니다.');
     return;
@@ -312,11 +335,13 @@ async function poll(){
   try { s = await response.json(); }
   catch (e) {
     if (!isCurrent(token)) return;
+    noteApplied(token);
     $('#phase').textContent = '잠시 후 다시 확인합니다';
     showRecover('transient', '서버 응답을 읽지 못했습니다. 작업을 지우지 않았고, 자동으로 다시 확인합니다.');
     return;
   }
   if (!isCurrent(token)) return;
+  noteApplied(token);
   localStorage.setItem('lastJob', token.job);
   hideRecover();
   setHidden($('#log'), false);

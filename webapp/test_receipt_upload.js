@@ -1288,6 +1288,98 @@ test('result 401 keeps the job and asks for login, while 500 stays retryable', a
   assert.equal(retry.store.get('lastJob'), JOB);
 });
 
+test('polls slower than the 2 second interval still render progress and done', async () => {
+  const waiting = [];
+  let hold = false;
+  const page = boot({
+    lastJob: JOB,
+    fetch(url) {
+      if (hold || String(url).endsWith('/receipts')) {
+        return new Promise(resolve => waiting.push({ url: String(url), resolve }));
+      }
+      return jsonResult(200, runningStatus());
+    }
+  });
+  await flush();
+  hold = true;
+  const first = page.intervals.at(-1).fn();
+  await flush();
+  const second = page.intervals.at(-1).fn();
+  await flush();
+  assert.equal(waiting.length, 2);
+  waiting[0].resolve(jsonResult(200, { ...runningStatus(), progress: 35 }));
+  await first;
+  await flush();
+  assert.equal(page.elements.pbar.style.width, '35%');
+  assert.equal(page.store.get('lastJob'), JOB);
+  waiting[1].resolve(jsonResult(200, { state: 'done', phase: '완료', progress: 100, file_count: 10, skipped: [], log_tail: [] }));
+  await second;
+  await flush();
+  const receipt = waiting.find(item => item.url.includes('/receipts'));
+  assert.ok(receipt);
+  receipt.resolve(jsonResult(200, { rows: [sampleRow()], ledger_dirty: false }));
+  await flush();
+  assert.match(page.elements.rows.innerHTML, /한밭마트/);
+  assert.equal(page.elements.step3.classList.contains('hide'), false);
+  assert.equal(page.store.get('lastJob'), JOB);
+});
+
+test('a timed out poll keeps the job, ignores its late body, and a retry can finish', async () => {
+  const waiting = [];
+  let mode = 'fast';
+  const nextJob = 'abcdef0123456789';
+  const page = boot({
+    lastJob: JOB,
+    fetch(url, opts) {
+      const method = (opts && opts.method) || 'GET';
+      if (method === 'POST') return jsonResult(200, { job_id: nextJob, file_count: 1, skipped: [] });
+      if (mode === 'hold') return new Promise(resolve => waiting.push({ url: String(url), resolve }));
+      if (String(url).endsWith('/receipts')) return jsonResult(200, { rows: [sampleRow()], ledger_dirty: false });
+      if (mode === 'done') return jsonResult(200, { state: 'done', phase: '완료', progress: 100, file_count: 1, skipped: [], log_tail: [] });
+      return jsonResult(200, { ...runningStatus(), progress: 55 });
+    }
+  });
+  await flush();
+  mode = 'hold';
+  const slow = page.sandbox.poll();
+  await flush();
+  const timeout = page.timeouts.filter(item => item.ms === 15000).at(-1);
+  assert.ok(timeout);
+  timeout.fn();
+  assert.equal(page.elements.phase.textContent, '잠시 후 다시 확인합니다');
+  assert.match(page.elements.recoverMsg.textContent, /응답이 늦습니다/);
+  assert.equal(page.store.get('lastJob'), JOB);
+  waiting[0].resolve(jsonResult(404, { detail: '없는 작업입니다.' }));
+  await slow;
+  await flush();
+  assert.equal(page.store.get('lastJob'), JOB);
+  assert.equal(page.elements.phase.textContent.includes('찾지 못했습니다'), false);
+  mode = 'fast';
+  page.elements.retryPoll.onclick();
+  await flush();
+  assert.equal(page.elements.pbar.style.width, '55%');
+  assert.equal(page.store.get('lastJob'), JOB);
+
+  mode = 'hold';
+  const oldJobPoll = page.sandbox.poll();
+  await flush();
+  const oldCall = waiting.at(-1);
+  mode = 'done';
+  page.elements.newUpload.onclick();
+  page.elements.pick.files = [fileNamed('again.jpg', 'image/jpeg')];
+  page.elements.pick.dispatchEvent({ type: 'change' });
+  await flush();
+  const started = page.elements.go.onclick();
+  await started;
+  await flush();
+  oldCall.resolve(jsonResult(404, { detail: '없는 작업입니다.' }));
+  await oldJobPoll;
+  await flush();
+  assert.equal(page.store.get('lastJob'), nextJob);
+  assert.match(page.elements.rows.innerHTML, /한밭마트/);
+  assert.equal(page.elements.phase.textContent.includes('찾지 못했습니다'), false);
+});
+
 test('patch failure alerts and does not pretend the row was saved', async () => {
   const page = boot({
     fetch: async (url, opts) => {
