@@ -7,22 +7,25 @@
 <style>
   *{box-sizing:border-box}
   body{margin:0;font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;background:#f4f6f8;color:#1f2937}
-  header{background:#1f4fd8;color:#fff;padding:28px 20px;text-align:center}
+  header{background:#0f766e;color:#fff;padding:28px 20px;text-align:center;position:relative}
+  header .home{position:absolute;left:16px;top:12px;color:#ccfbf1;font-size:14px;text-decoration:none}
+  footer.pf{text-align:center;color:#64748b;font-size:13px;padding:8px 0 40px}
+  footer.pf a{color:#475569}
   header h1{margin:0 0 6px;font-size:24px}
   header p{margin:0;opacity:.9}
   main{max-width:880px;margin:24px auto;padding:0 16px}
   .card{background:#fff;border-radius:12px;box-shadow:0 1px 8px #0001;padding:22px;margin-bottom:18px}
-  #drop{border:2px dashed #9db4f5;border-radius:12px;padding:40px 16px;text-align:center;cursor:pointer;background:#f7f9ff}
-  #drop.over{background:#e6edff;border-color:#2f6fed}
+  #drop{border:2px dashed #5eead4;border-radius:12px;padding:40px 16px;text-align:center;cursor:pointer;background:#f0fdfa}
+  #drop.over{background:#ccfbf1;border-color:#0f766e}
   #drop b{font-size:18px}
   #drop small{display:block;color:#6b7280;margin-top:8px}
-  button{background:#2f6fed;color:#fff;border:0;border-radius:8px;padding:12px 22px;font-size:16px;cursor:pointer}
+  button{background:#0f766e;color:#fff;border:0;border-radius:8px;padding:12px 22px;font-size:16px;cursor:pointer}
   button:disabled{background:#a5b4d8;cursor:default}
-  button.sub{background:#fff;color:#2f6fed;border:1px solid #2f6fed}
+  button.sub{background:#fff;color:#0f766e;border:1px solid #0f766e}
   button.danger{background:#fff;color:#b91c1c;border:1px solid #fca5a5}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
   .bar{height:14px;background:#e5e7eb;border-radius:7px;overflow:hidden;margin:10px 0}
-  .bar>div{height:100%;width:0;background:#2f6fed;transition:width .4s}
+  .bar>div{height:100%;width:0;background:#0f766e;transition:width .4s}
   #log{font:12px/1.5 Consolas,monospace;background:#111827;color:#d1d5db;border-radius:8px;padding:10px;max-height:150px;overflow:auto;white-space:pre-wrap}
   table{width:100%;border-collapse:collapse;font-size:14px}
   th,td{padding:8px 6px;border-bottom:1px solid #eee;text-align:left}
@@ -37,6 +40,7 @@
 </head>
 <body>
 <header>
+  <a class="home" href="/">← 소개</a>
   <h1>영수증 정리</h1>
   <p>영수증 사진을 올리면 반듯하게 펴서, 내용을 읽고, 식자재 지출현황 엑셀로 만들어 드립니다</p>
 </header>
@@ -75,6 +79,7 @@
 </section>
 
 </main>
+<footer class="pf">시범 운영 중 · <a href="/privacy">개인정보 처리 안내</a></footer>
 <script>
 const $ = s => document.querySelector(s);
 let picked = [], jobId = null, timer = null;

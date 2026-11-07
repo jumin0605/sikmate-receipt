@@ -251,16 +251,29 @@ threading.Thread(target=_purge_loop, daemon=True).start()
 # 화면 / API
 # ---------------------------------------------------------------------------
 LOGIN_HTML = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>접속 코드</title><style>body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;height:100vh;margin:0;background:#f4f6f8}
-form{background:#fff;padding:32px;border-radius:12px;box-shadow:0 2px 12px #0002;width:300px}
-input,button{width:100%;padding:12px;font-size:16px;margin-top:12px;box-sizing:border-box}button{background:#2f6fed;color:#fff;border:0;border-radius:8px}
-p{color:#c00;margin:8px 0 0}</style><form method=post action=/login><h3>영수증 정리</h3>
+<title>접속 코드 | 식메이트 영수증 정리</title><style>body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f0fdfa}
+form{background:#fff;padding:32px;border-radius:16px;box-shadow:0 6px 24px #0f172a14;width:min(340px,92vw);box-sizing:border-box}
+h3{margin:0 0 6px;color:#115e59}
+input,button{width:100%;padding:13px;font-size:16px;margin-top:12px;box-sizing:border-box}input{border:1px solid #cbd5e1;border-radius:10px}button{background:#0f766e;color:#fff;border:0;border-radius:10px;font-weight:700;cursor:pointer}
+button:hover{background:#115e59}p{color:#b91c1c;margin:10px 0 0}a{display:block;text-align:center;margin-top:16px;color:#64748b;font-size:14px;text-decoration:none}</style><form method=post action=/login><h3>식메이트 영수증 정리</h3>
 <div>안내받은 접속 코드를 입력해 주세요.</div><input type=password name=code autofocus>
-<button>들어가기</button>{msg}</form>"""
+<button>들어가기</button>{msg}<a href="/">← 소개 페이지로</a></form>"""
 
 
 @app.get("/", response_class=HTMLResponse)
+def landing():
+    """소개 페이지 (누구나 볼 수 있음)"""
+    return FileResponse(HERE / "static" / "landing.html")
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy():
+    return FileResponse(HERE / "static" / "privacy.html")
+
+
+@app.get("/app", response_class=HTMLResponse)
 def index(rc_auth: str | None = Cookie(default=None)):
+    """실제 도구. 접속 코드가 설정돼 있으면 코드 확인 후에만 열린다."""
     if ACCESS_CODE and rc_auth != _token():
         return HTMLResponse(LOGIN_HTML.replace("{msg}", ""))
     return FileResponse(HERE / "static" / "index.html")
@@ -270,7 +283,7 @@ def index(rc_auth: str | None = Cookie(default=None)):
 def login(code: str = Form(...)):
     if ACCESS_CODE and not secrets.compare_digest(code.strip(), ACCESS_CODE):
         return HTMLResponse(LOGIN_HTML.replace("{msg}", "<p>코드가 맞지 않습니다.</p>"), status_code=401)
-    r = RedirectResponse("/", status_code=303)
+    r = RedirectResponse("/app", status_code=303)
     r.set_cookie("rc_auth", _token(), max_age=30 * 86400, httponly=True, samesite="lax")
     return r
 
