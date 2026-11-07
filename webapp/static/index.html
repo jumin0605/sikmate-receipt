@@ -229,9 +229,18 @@ if (!uploadApi) {
   };
 }
 
+let watchGen = 0;
+let pollSeq = 0;
 function stopPolling() {
   if (timer) clearInterval(timer);
   timer = null;
+}
+function issueToken() {
+  pollSeq += 1;
+  return { watch: watchGen, seq: pollSeq, job: jobId };
+}
+function isCurrent(token) {
+  return !!(token && token.watch === watchGen && token.seq === pollSeq && token.job && token.job === jobId);
 }
 function setHidden(el, hidden) {
   if (hidden) el.classList.add('hide');
@@ -253,37 +262,47 @@ function showRecover(kind, message) {
 function hideRecover() {
   setHidden($('#recover'), true);
 }
+function applyAuth(token) {
+  if (!isCurrent(token)) return;
+  stopPolling();
+  watchGen += 1;
+  $('#phase').textContent = '로그인이 필요합니다';
+  showRecover('auth', '접속 확인이 필요합니다. 작업은 지우지 않았습니다. 다시 로그인한 뒤 이어서 볼 수 있습니다.');
+}
+function applyMissing(token) {
+  if (!isCurrent(token)) return;
+  if (localStorage.getItem('lastJob') === token.job) localStorage.removeItem('lastJob');
+  stopPolling();
+  watchGen += 1;
+  $('#step3').classList.add('hide');
+  $('#step2').classList.remove('hide');
+  $('#phase').textContent = '작업을 서버에서 찾지 못했습니다';
+  showRecover('missing', '이 작업을 서버에서 찾지 못했습니다. 서버가 다시 시작되면 올려 둔 파일이 함께 사라져 여기서 복구할 수 없습니다. 영수증을 다시 올려 주세요.');
+}
 function startWatching() {
+  watchGen += 1;
+  stopPolling();
   $('#step1').classList.add('hide');
   $('#step3').classList.add('hide');
   $('#step2').classList.remove('hide');
-  stopPolling();
   poll();
   timer = setInterval(poll, 2000);
 }
 async function poll(){
-  if (!jobId) { stopPolling(); return; }
+  if (!jobId) return;
+  const token = issueToken();
   let response;
   try {
-    response = await fetch('/api/jobs/' + jobId);
+    response = await fetch('/api/jobs/' + token.job);
   } catch (e) {
+    if (!isCurrent(token)) return;
     $('#phase').textContent = '연결을 확인하지 못했습니다';
     showRecover('transient', '네트워크에 연결하지 못했습니다. 작업을 지우지 않았고, 자동으로 다시 확인합니다.');
     return;
   }
-  if (response.status === 401) {
-    stopPolling();
-    $('#phase').textContent = '로그인이 필요합니다';
-    showRecover('auth', '접속 확인이 필요합니다. 작업은 지우지 않았습니다. 다시 로그인한 뒤 이어서 볼 수 있습니다.');
-    return;
-  }
-  if (response.status === 404) {
-    stopPolling();
-    localStorage.removeItem('lastJob');
-    $('#phase').textContent = '작업을 서버에서 찾지 못했습니다';
-    showRecover('missing', '이 작업을 서버에서 찾지 못했습니다. 서버가 다시 시작되면 올려 둔 파일이 함께 사라져 여기서 복구할 수 없습니다. 영수증을 다시 올려 주세요.');
-    return;
-  }
+  if (!isCurrent(token)) return;
+  if (response.status === 401) { applyAuth(token); return; }
+  if (response.status === 404) { applyMissing(token); return; }
   if (!response.ok) {
     $('#phase').textContent = '잠시 후 다시 확인합니다';
     showRecover('transient', '서버가 잠시 응답하지 못했습니다. 작업을 지우지 않았고, 자동으로 다시 확인합니다.');
@@ -292,18 +311,20 @@ async function poll(){
   let s;
   try { s = await response.json(); }
   catch (e) {
+    if (!isCurrent(token)) return;
     $('#phase').textContent = '잠시 후 다시 확인합니다';
     showRecover('transient', '서버 응답을 읽지 못했습니다. 작업을 지우지 않았고, 자동으로 다시 확인합니다.');
     return;
   }
-  localStorage.setItem('lastJob', jobId);
+  if (!isCurrent(token)) return;
+  localStorage.setItem('lastJob', token.job);
   hideRecover();
   setHidden($('#log'), false);
   $('#phase').textContent = s.state === 'queued' ? `대기 중 (앞에 ${s.queue_ahead}건)` : s.phase;
   $('#pbar').style.width = (s.progress || 0) + '%';
   $('#pct').textContent = `${s.progress || 0}%  ·  영수증 ${s.file_count}개` + (s.skipped?.length ? `  ·  제외 ${s.skipped.length}개` : '');
   const lg = $('#log'); lg.textContent = (s.log_tail || []).join('\n'); lg.scrollTop = lg.scrollHeight;
-  if (s.state === 'done') { stopPolling(); showResult(); }
+  if (s.state === 'done') { stopPolling(); showResult(token); }
   if (s.state === 'error') {
     stopPolling();
     $('#phase').textContent = '오류: ' + (s.error || '처리에 실패했습니다.');
@@ -345,26 +366,26 @@ function render(){
   $('#rows').innerHTML = ROWS.map(rowHtml).join('');
 }
 
-async function showResult(){
+async function showResult(token){
+  if (!isCurrent(token)) return;
   let r;
-  try { r = await fetch(`/api/jobs/${jobId}/receipts`); }
+  try { r = await fetch('/api/jobs/' + token.job + '/receipts'); }
   catch (e) {
+    if (!isCurrent(token)) return;
+    $('#phase').textContent = '연결을 확인하지 못했습니다';
     showRecover('transient', '결과를 가져오지 못했습니다. 작업을 지우지 않았습니다. 다시 확인해 주세요.');
     return;
   }
-  if (r.status === 404) {
-    localStorage.removeItem('lastJob');
-    $('#step3').classList.add('hide');
-    $('#step2').classList.remove('hide');
-    $('#phase').textContent = '작업을 서버에서 찾지 못했습니다';
-    showRecover('missing', '결과를 서버에서 찾지 못했습니다. 서버가 다시 시작되면 파일이 함께 사라져 여기서 복구할 수 없습니다. 영수증을 다시 올려 주세요.');
-    return;
-  }
+  if (!isCurrent(token)) return;
+  if (r.status === 401) { applyAuth(token); return; }
+  if (r.status === 404) { applyMissing(token); return; }
   if (!r.ok) {
+    $('#phase').textContent = '잠시 후 다시 확인합니다';
     showRecover('transient', '결과를 가져오지 못했습니다. 작업을 지우지 않았습니다. 다시 확인해 주세요.');
     return;
   }
   const d = await r.json().catch(() => null);
+  if (!isCurrent(token)) return;
   if (!d || !Array.isArray(d.rows)) {
     showRecover('transient', '결과를 읽지 못했습니다. 작업을 지우지 않았습니다. 다시 확인해 주세요.');
     return;
@@ -416,6 +437,7 @@ $('#del').onclick = async () => {
 $('#retryPoll').onclick = () => { if (jobId) poll(); };
 $('#relogin').onclick = () => { location.href = '/app'; };
 $('#newUpload').onclick = () => {
+  watchGen += 1;
   stopPolling();
   jobId = null;
   picked = [];
@@ -433,19 +455,24 @@ $('#newUpload').onclick = () => {
 const last = localStorage.getItem('lastJob');
 if (last) {
   jobId = last;
+  watchGen += 1;
+  const token = issueToken();
   fetch('/api/jobs/' + last).then(r => {
+    if (!isCurrent(token)) return;
     if (r.status === 404) {
-      localStorage.removeItem('lastJob');
+      if (localStorage.getItem('lastJob') === token.job) localStorage.removeItem('lastJob');
       jobId = null;
+      watchGen += 1;
       $('#err').textContent = '이전에 보던 작업을 서버에서 찾지 못했습니다. 영수증을 다시 올려 주세요.';
       return;
     }
     if (r.status === 401) {
+      watchGen += 1;
       $('#err').textContent = '접속 확인이 필요합니다. 다시 로그인한 뒤 작업을 이어서 볼 수 있습니다.';
       return;
     }
     startWatching();
-  }).catch(() => { startWatching(); });
+  }).catch(() => { if (isCurrent(token)) startWatching(); });
 }
 </script>
 </body>

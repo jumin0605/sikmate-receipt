@@ -39,7 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from env_config import load_project_env
-from job_resume import classify_on_restart
+from job_resume import classify_on_restart, clear_derived_outputs
 
 HERE = Path(__file__).resolve().parent
 load_project_env(HERE.parent)
@@ -159,6 +159,8 @@ def add_log(job_id: str, line: str):
 
 # ---------------------------------------------------------------------------
 # 처리 (한 번에 한 작업만. 기존 도구가 전역 상태를 쓰므로 줄을 세운다)
+# work_q 는 이 프로세스 안에서만 유효하다. 현재 Docker 명령은 uvicorn 프로세스
+# 하나다. 프로세스를 여러 개 띄우면 같은 작업을 한 쪽이 차지했다고 보장할 수 없다.
 # ---------------------------------------------------------------------------
 work_q: "queue.Queue[str]" = queue.Queue()
 
@@ -184,6 +186,9 @@ def run_job(job_id: str):
                 write_status(job_id, progress=25 + int(65 * (i - 1) / max(n, 1)))
 
     try:
+        # 이전 시도의 정리본·json·엑셀·zip 이 남아 있으면 새 결과와 섞인다.
+        # 원본 폴더는 지우지 않는다.
+        clear_derived_outputs(jd)
         write_status(job_id, state="running", phase="사진 정리 중", progress=1,
                      started=datetime.now().isoformat(timespec="seconds"))
         written = core.run(str(src), out_dir=str(cleaned), bg="white", fmt="jpg",
@@ -233,20 +238,19 @@ def _resume_jobs_on_startup():
 
     파일을 지우지 않는다. 재배포로 데이터 디렉터리가 비면 복구할 항목이 없다.
     """
-    resumable, stalled = classify_on_restart(JOBS_DIR)
+    resumable, stalled = classify_on_restart(JOBS_DIR, ALLOWED_EXT)
     for job_id in resumable:
         try:
             write_status(job_id, state="queued", phase="서버가 다시 시작되어 대기 중", progress=0)
-            add_log(job_id, "[재시작] 디스크에 원본이 남아 있어 다시 처리합니다.")
+            add_log(job_id, "[재시작] 디스크에 원본이 모두 남아 있어 다시 처리합니다.")
             work_q.put(job_id)
         except OSError:
             continue
-    for job_id in stalled:
+    incomplete = "서버가 다시 시작되었고 원본이 기대 개수와 다르거나 읽을 수 없습니다. 일부만 처리하지 않았습니다. 영수증을 다시 올려 주세요."
+    missing = "서버가 다시 시작되었지만 원본 파일이 없어 이어서 처리하지 못했습니다."
+    for job_id, reason in stalled:
         try:
-            write_status(
-                job_id, state="error", phase="오류",
-                error="서버가 다시 시작되었지만 원본 파일이 없어 이어서 처리하지 못했습니다.",
-            )
+            write_status(job_id, state="error", phase="오류", error=incomplete if reason == "incomplete" else missing)
         except OSError:
             continue
 
