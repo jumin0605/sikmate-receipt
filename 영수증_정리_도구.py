@@ -2645,7 +2645,8 @@ def load_records(files: list[Path], base: Path | None = None) -> tuple[list[dict
             일시 = first(r, KEY_날짜) or first(parent, KEY_날짜) or 이름[:8]
             날짜 = norm_date(일시)
             파일날짜 = stem_date(이름)
-            if 파일날짜 and 파일날짜 != 날짜:
+            # 사람이 장부날짜를 직접 적어 둔 영수증은 파일 이름보다 그 값을 따른다
+            if 파일날짜 and 파일날짜 != 날짜 and not r.get("장부날짜"):
                 warns.append(f"[날짜] {이름} {vendor} - 판독한 {날짜} 대신"
                              f" 파일 이름의 {파일날짜} 로 적습니다")
                 날짜 = 파일날짜

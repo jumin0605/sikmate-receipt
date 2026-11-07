@@ -34,6 +34,14 @@
   .tag{display:inline-block;background:#f59e0b;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px}
   .ok{color:#15803d}
   .hint{color:#64748b;font-size:12px;display:block;margin-top:2px}
+  .tag.gray{background:#94a3b8}
+  tr.ex td:not(.act){opacity:.5}
+  button.mini{padding:5px 11px;font-size:13px;border-radius:6px}
+  td.act{white-space:nowrap}
+  td.act a{font-size:13px;color:#0f766e;margin-right:6px}
+  td input:not([type=checkbox]){padding:6px;font-size:14px;border:1px solid #cbd5e1;border-radius:6px;width:100%;min-width:90px}
+  table{min-width:760px}
+  .toast{color:#0f766e;font-size:13px;margin-top:8px;min-height:18px}
   #files{margin-top:12px;font-size:14px;color:#374151}
   .hide{display:none}
   .note{font-size:13px;color:#6b7280;line-height:1.6}
@@ -67,6 +75,7 @@
 <section class="card hide" id="step3">
   <h3 style="margin-top:0">완료되었습니다</h3>
   <div id="summary" class="note"></div>
+  <div id="toast" class="toast"></div>
   <div class="row">
     <button id="dlLedger">지출현황 엑셀 받기</button>
     <button class="sub" id="dlImages">정리된 사진 받기(zip)</button>
@@ -74,7 +83,7 @@
     <button class="danger" id="del">지금 삭제</button>
   </div>
   <div style="overflow:auto;margin-top:16px">
-    <table><thead><tr><th>파일</th><th>상호</th><th>날짜</th><th class="num">총액</th><th class="num">품목</th><th>확인</th></tr></thead>
+    <table><thead><tr><th>파일</th><th>상호</th><th>날짜</th><th class="num">총액</th><th class="num">품목</th><th>확인</th><th></th></tr></thead>
     <tbody id="rows"></tbody></table>
   </div>
 </section>
@@ -126,19 +135,78 @@ async function poll(){
   if (s.state === 'error') { clearInterval(timer); $('#phase').textContent = '오류: ' + (s.error || '처리에 실패했습니다.'); }
 }
 
+let ROWS = [], EDIT = null, DIRTY = false;
+const attr = s => esc(s ?? '');
+const imgUrl = x => `/api/jobs/${jobId}/image/${encodeURIComponent(x.image)}`;
+
+function rowHtml(x, i){
+  if (i === EDIT) return `<tr class="warn">
+    <td>${esc(x.file)}<br><a href="${imgUrl(x)}" target="_blank" style="font-size:13px">사진 보기</a></td>
+    <td><input id="e_v" value="${attr(x.vendor)}" maxlength="60"></td>
+    <td><input id="e_d" type="date" value="${attr(x.date)}"></td>
+    <td class="num"><input id="e_t" type="number" min="0" step="1" value="${x.total ?? ''}" style="width:120px"></td>
+    <td class="num">${x.items}</td>
+    <td><label style="font-size:13px"><input type="checkbox" id="e_x" ${x.excluded ? 'checked' : ''}> 장부에서 제외</label></td>
+    <td class="act"><button class="mini" onclick="saveRow(${i})">저장</button> <button class="mini sub" onclick="cancelEdit()">취소</button></td></tr>`;
+  const status = x.excluded ? '<span class="tag gray">장부 제외</span>'
+    : x.needs_check ? `<span class="tag">확인 필요</span> <small>${esc(x.note)}</small>`
+    : (x.edited ? '<span class="ok">수정함</span>' : x.confirmed ? '<span class="ok">확인함</span>' : '<span class="ok">정상</span>')
+      + (x.hint ? `<span class="hint">${esc(x.hint)}</span>` : '');
+  return `<tr class="${x.excluded ? 'ex' : x.needs_check ? 'warn' : ''}">
+    <td>${esc(x.file)}</td><td>${esc(x.vendor) || '-'}</td><td>${esc(x.date) || '-'}</td>
+    <td class="num">${won(x.total)}</td><td class="num">${x.items}</td><td>${status}</td>
+    <td class="act"><a href="${imgUrl(x)}" target="_blank">사진 보기</a>
+      ${x.needs_check ? `<button class="mini" onclick="okRow(${i})">맞음</button>` : ''}
+      <button class="mini sub" onclick="startEdit(${i})">수정</button></td></tr>`;
+}
+
+function render(){
+  const need = ROWS.filter(x => x.needs_check).length, ed = ROWS.filter(x => x.edited).length;
+  $('#summary').innerHTML = (need
+    ? `영수증 ${ROWS.length}장 중 <b style="color:#b45309">${need}장은 금액 확인이 필요합니다.</b> '사진 보기'로 원본과 비교해서 맞으면 <b>맞음</b>, 다르면 <b>수정</b>을 눌러 주세요.`
+    : `영수증 ${ROWS.length}장 모두 금액 확인이 끝났습니다. 회색 안내가 있는 줄은 날짜나 번호처럼 금액과 관계없는 부분을 읽지 못한 경우입니다.`)
+    + (ed ? ` 직접 고친 영수증 ${ed}장은 엑셀에 고친 값이 들어갑니다.` : '');
+  $('#rows').innerHTML = ROWS.map(rowHtml).join('');
+}
+
 async function showResult(){
   const r = await fetch(`/api/jobs/${jobId}/receipts`); const d = await r.json();
   $('#step2').classList.add('hide'); $('#step3').classList.remove('hide');
-  $('#summary').innerHTML = d.need_count
-    ? `영수증 ${d.rows.length}장 중 <b style="color:#b45309">${d.need_count}장은 금액 확인이 필요합니다.</b> 아래 노란 줄을 원본과 비교해 보세요.`
-    : `영수증 ${d.rows.length}장의 금액이 모두 합계 검산을 통과했습니다. 회색 안내가 있는 줄은 날짜나 번호처럼 금액과 관계없는 부분을 읽지 못한 경우입니다.`;
-  $('#rows').innerHTML = d.rows.map(x => `<tr class="${x.needs_check ? 'warn' : ''}">
-    <td>${esc(x.file)}</td><td>${esc(x.vendor) || '-'}</td><td>${esc(x.date) || '-'}</td>
-    <td class="num">${won(x.total)}</td><td class="num">${x.items}</td>
-    <td>${x.needs_check ? `<span class="tag">확인 필요</span> <small>${esc(x.note)}</small>` : '<span class="ok">정상</span>' + (x.hint ? `<span class="hint">${esc(x.hint)}</span>` : '')}</td></tr>`).join('');
+  ROWS = d.rows; DIRTY = !!d.ledger_dirty; EDIT = null; render();
 }
 
-$('#dlLedger').onclick = () => location.href = `/api/jobs/${jobId}/download/ledger`;
+function startEdit(i){ EDIT = i; render(); }
+function cancelEdit(){ EDIT = null; render(); }
+
+async function patchRow(i, body, doneMsg){
+  const x = ROWS[i];
+  const r = await fetch(`/api/jobs/${jobId}/receipts/${encodeURIComponent(x.key)}`,
+    {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(j.detail || '저장하지 못했습니다. 잠시 뒤 다시 시도해 주세요.'); return false; }
+  ROWS[i] = j.row; DIRTY = true; EDIT = null; render();
+  $('#toast').textContent = doneMsg;
+  return true;
+}
+
+async function okRow(i){ await patchRow(i, {confirm: true}, '확인했습니다. 엑셀은 받을 때 반영됩니다.'); }
+
+async function saveRow(i){
+  const x = ROWS[i], body = {};
+  const v = $('#e_v').value.trim(), d = $('#e_d').value, t = $('#e_t').value, ex = $('#e_x').checked;
+  if (v && v !== (x.vendor || '')) body.vendor = v;
+  if (d && d !== (x.date || '')) body.date = d;
+  if (t !== '' && Number(t) !== x.total) body.total = Math.round(Number(t));
+  if (ex !== x.excluded) body.exclude = ex;
+  if (!Object.keys(body).length) { EDIT = null; render(); return; }
+  await patchRow(i, body, '저장했습니다. 엑셀은 받을 때 고친 값으로 만들어집니다.');
+}
+
+$('#dlLedger').onclick = () => {
+  const b = $('#dlLedger'), old = b.textContent;
+  if (DIRTY) { b.disabled = true; b.textContent = '고친 값으로 엑셀 만드는 중…'; setTimeout(() => { b.disabled = false; b.textContent = old; DIRTY = false; }, 7000); }
+  location.href = `/api/jobs/${jobId}/download/ledger`;
+};
 $('#dlImages').onclick = () => location.href = `/api/jobs/${jobId}/download/images`;
 $('#dlCsv').onclick = () => location.href = `/api/jobs/${jobId}/download/json`;
 $('#del').onclick = async () => {

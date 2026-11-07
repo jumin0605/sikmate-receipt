@@ -27,6 +27,8 @@ import shutil
 import sys
 import threading
 import time
+import csv
+import io
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +36,7 @@ from pathlib import Path
 from fastapi import Cookie, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from env_config import load_project_env
 
@@ -101,6 +104,21 @@ def _check_auth(token: str | None):
 # 작업 상태 (파일 한 개: jobs/<id>/status.json)
 # ---------------------------------------------------------------------------
 _status_lock = threading.Lock()
+
+
+_rebuild_locks: dict[str, threading.Lock] = {}
+
+
+def rebuild_ledger(job_id: str, log=None) -> Path:
+    """json 폴더의 현재 값(사용자가 고친 값 포함)으로 지출현황 엑셀을 다시 만든다."""
+    jd = JOBS_DIR / job_id
+    lock = _rebuild_locks.setdefault(job_id, threading.Lock())
+    with lock:
+        xlsx = core.make_ledger(str(jd / "json"), out_path=str(jd / "지출현황.xlsx"),
+                                photos=str(jd / "정리결과"),
+                                log=log or (lambda m: add_log(job_id, m)))
+        write_status(job_id, ledger_dirty=False)
+        return Path(xlsx)
 
 
 def job_dir(job_id: str) -> Path:
@@ -182,8 +200,7 @@ def run_job(job_id: str):
 
         state["phase"] = "장부"
         write_status(job_id, phase="지출현황 엑셀 만드는 중", progress=90)
-        xlsx = core.make_ledger(str(jdir), out_path=str(jd / "지출현황.xlsx"),
-                                photos=str(cleaned), log=log)
+        xlsx = rebuild_ledger(job_id, log=log)
 
         # 정리된 사진 묶음(zip)도 함께 제공
         with zipfile.ZipFile(jd / "정리된_영수증.zip", "w", zipfile.ZIP_DEFLATED) as z:
@@ -350,10 +367,8 @@ def job_info(job_id: str, rc_auth: str | None = Cookie(default=None)):
     return st
 
 
-@app.get("/api/jobs/{job_id}/receipts")
-def job_receipts(job_id: str, rc_auth: str | None = Cookie(default=None)):
-    """판독 결과 요약 (화면 표용). 확인이 필요한 영수증을 맨 위로 올린다."""
-    _check_auth(rc_auth)
+def _receipt_rows(job_id: str) -> list[dict]:
+    """판독 결과를 화면용 행으로 만든다. 사람이 고친 값이 있으면 그 값을 먼저 보여 준다."""
     jdir = job_dir(job_id) / "json"
     rows = []
     for p in sorted(jdir.glob("*.json")):
@@ -370,20 +385,127 @@ def job_receipts(job_id: str, rc_auth: str | None = Cookie(default=None)):
             if not isinstance(r, dict):
                 continue
             v = r.get("_검산") or d.get("_검산") or {}
+            fixed_total = r.get("장부금액")
             rows.append({
+                "key": f"{p.stem}#{n if kids else 0}",
                 "file": f"{base} ({n}/{len(kids)})" if kids else base,
-                "vendor": r.get("상호"),
+                "image": base,
+                "vendor": r.get("장부거래처") or r.get("상호"),
                 # 장부와 똑같이 파일 이름의 날짜를 우선한다 (손글씨 날짜를 2020년 등으로 잘못 읽는 일이 있음)
-                "date": core.stem_date(Path(base).stem) or r.get("거래일자"),
-                "total": r.get("총액"),
+                "date": r.get("장부날짜") or core.stem_date(Path(base).stem) or r.get("거래일자"),
+                "total": fixed_total if isinstance(fixed_total, (int, float)) else r.get("총액"),
                 "items": len(r.get("품목") or []),
-                "needs_check": bool(v.get("확인필요")),
+                "needs_check": bool(v.get("확인필요")) and not r.get("_확인됨"),
+                "confirmed": bool(r.get("_확인됨")),
+                "edited": bool(r.get("_수정")),
+                "excluded": r.get("장부반영") == "제외(중복)",
                 "note": core.json_note(v) if v.get("확인필요") else "",
                 "hint": "" if v.get("확인필요") else core.json_hint(v),
                 "unsure": r.get("판독주의") or [],
             })
     rows.sort(key=lambda r: (not r["needs_check"], r["date"] or "9999", r["file"]))
-    return {"rows": rows, "need_count": sum(r["needs_check"] for r in rows)}
+    return rows
+
+
+@app.get("/api/jobs/{job_id}/receipts")
+def job_receipts(job_id: str, rc_auth: str | None = Cookie(default=None)):
+    """판독 결과 요약 (화면 표용). 확인이 필요한 영수증을 맨 위로 올린다."""
+    _check_auth(rc_auth)
+    rows = _receipt_rows(job_id)
+    return {"rows": rows, "need_count": sum(r["needs_check"] for r in rows),
+            "edited_count": sum(r["edited"] for r in rows),
+            "ledger_dirty": bool(read_status(job_id).get("ledger_dirty"))}
+
+
+class ReceiptFix(BaseModel):
+    vendor: str | None = None
+    date: str | None = None
+    total: int | None = None
+    exclude: bool | None = None
+    confirm: bool | None = None
+
+
+@app.patch("/api/jobs/{job_id}/receipts/{key}")
+def fix_receipt(job_id: str, key: str, fix: ReceiptFix, rc_auth: str | None = Cookie(default=None)):
+    """영양사가 영수증 한 장의 값을 직접 고치거나 '맞음'으로 확인한다.
+
+    판독 원본 값(상호, 거래일자, 총액)은 그대로 두고, 고친 값은 장부거래처/장부날짜/장부금액에
+    따로 적는다. 나중에 '모델이 어디서 틀렸는지' 비교할 수 있게 하려는 것이다.
+    """
+    _check_auth(rc_auth)
+    jd = job_dir(job_id)
+    m = re.fullmatch(r"(.+)#(\d+)", key)
+    if not m:
+        raise HTTPException(400, "잘못된 영수증 번호입니다.")
+    jpath = (jd / "json" / f"{m.group(1)}.json").resolve()
+    if jpath.parent != (jd / "json").resolve() or not jpath.exists():
+        raise HTTPException(404, "없는 영수증입니다.")
+    idx = int(m.group(2))
+
+    if fix.vendor is not None and not (1 <= len(fix.vendor.strip()) <= 60):
+        raise HTTPException(400, "상호는 1~60자로 적어 주세요.")
+    if fix.total is not None and not (0 <= fix.total <= 2_000_000_000):
+        raise HTTPException(400, "금액이 올바르지 않습니다.")
+    if fix.date is not None:
+        try:
+            datetime.strptime(fix.date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, "날짜는 2026-08-05 같은 형식으로 적어 주세요.")
+
+    lock = _rebuild_locks.setdefault(job_id, threading.Lock())
+    with lock:
+        d = json.loads(jpath.read_text(encoding="utf-8"))
+        kids = d.get("영수증") if isinstance(d.get("영수증"), list) else None
+        target = (kids[idx - 1] if kids and 1 <= idx <= len(kids) else None) if kids else (d if idx == 0 else None)
+        if not isinstance(target, dict):
+            raise HTTPException(404, "없는 영수증입니다.")
+
+        changes = {}
+        def put(field, shown_key, new, orig_key):
+            before = target.get(field) if target.get(field) not in (None, "") else target.get(orig_key)
+            if before != new:
+                changes[shown_key] = {"전": before, "후": new}
+            target[field] = new
+        if fix.vendor is not None:
+            put("장부거래처", "상호", fix.vendor.strip(), "상호")
+        if fix.date is not None:
+            put("장부날짜", "날짜", fix.date, "거래일자")
+        if fix.total is not None:
+            put("장부금액", "총액", fix.total, "총액")
+        if fix.exclude is not None:
+            if fix.exclude:
+                target["장부반영"] = "제외(중복)"
+                target["중복사유"] = "사용자가 장부에서 제외"
+            else:
+                target.pop("장부반영", None); target.pop("중복사유", None)
+            changes["장부제외"] = {"전": not fix.exclude, "후": fix.exclude}
+        if fix.confirm or changes:
+            target["_확인됨"] = True            # 사람이 보고 확인했으니 '확인 필요'는 끈다
+        if changes:
+            hist = target.setdefault("_수정", [])
+            hist.append({"시각": datetime.now().isoformat(timespec="seconds"), "변경": changes})
+        if kids:
+            d["_검산"] = dict(d.get("_검산") or {}, 확인필요=any(
+                (k.get("_검산") or {}).get("확인필요") and not k.get("_확인됨") for k in kids if isinstance(k, dict)))
+        jpath.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        if changes:
+            with open(jd / "corrections.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"key": key, "시각": datetime.now().isoformat(timespec="seconds"),
+                                    "변경": changes}, ensure_ascii=False) + "\n")
+    write_status(job_id, ledger_dirty=True)
+    row = next((r for r in _receipt_rows(job_id) if r["key"] == key), None)
+    return {"row": row}
+
+
+@app.get("/api/jobs/{job_id}/image/{name}")
+def receipt_image(job_id: str, name: str, rc_auth: str | None = Cookie(default=None)):
+    """수정할 때 원본과 비교할 수 있게 정리된 영수증 사진을 보여 준다."""
+    _check_auth(rc_auth)
+    folder = (job_dir(job_id) / "정리결과").resolve()
+    path = (folder / Path(name).name).resolve()
+    if path.parent != folder or not path.is_file():
+        raise HTTPException(404, "사진이 없습니다.")
+    return FileResponse(path)
 
 
 @app.get("/api/jobs/{job_id}/download/{kind}")
@@ -395,6 +517,23 @@ def download(job_id: str, kind: str, rc_auth: str | None = Cookie(default=None))
         "images": (jd / "정리된_영수증.zip", "정리된_영수증.zip"),
         "json": (jd / "json" / "_요약.csv", "영수증_요약.csv"),
     }
+    if kind == "ledger" and read_status(job_id).get("ledger_dirty"):
+        try:
+            rebuild_ledger(job_id)         # 영양사가 고친 값을 반영해 엑셀을 새로 만든다
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, f"엑셀을 다시 만들지 못했습니다. 장부에 넣을 영수증이 남아 있는지 확인해 주세요. ({str(e)[:80]})")
+    if kind == "json":
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["파일", "상호", "날짜", "총액", "품목수", "상태", "직접 수정", "참고"])
+        for r in _receipt_rows(job_id):
+            status = "장부 제외" if r["excluded"] else ("확인 필요" if r["needs_check"] else "정상")
+            w.writerow([r["file"], r["vendor"] or "", r["date"] or "", r["total"] if r["total"] is not None else "",
+                        r["items"], status, "예" if r["edited"] else "", r["note"] or r["hint"]])
+        from fastapi.responses import Response
+        return Response(("\ufeff" + buf.getvalue()).encode("utf-8"), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": "attachment; filename*=UTF-8''" +
+                                 "%EC%98%81%EC%88%98%EC%A6%9D_%EC%9A%94%EC%95%BD.csv"})
     if kind not in files or not files[kind][0].exists():
         raise HTTPException(404, "파일이 아직 없습니다.")
     path, nice = files[kind]
