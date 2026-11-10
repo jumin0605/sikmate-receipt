@@ -47,6 +47,8 @@
   #files{margin-top:12px;font-size:14px;color:#374151}
   .hide{display:none}
   .note{font-size:13px;color:#6b7280;line-height:1.6}
+  .problems{margin:12px 0;padding:10px 14px;background:#fff7e6;border:1px solid #f59e0b;border-radius:8px;font-size:13px;line-height:1.6;color:#92400e}
+  .problems ul{margin:4px 0 0;padding-left:20px}
 </style>
 </head>
 <body>
@@ -71,6 +73,7 @@
   <h3 style="margin-top:0" id="phase">준비 중…</h3>
   <div class="bar"><div id="pbar"></div></div>
   <div id="pct" class="note"></div>
+  <div id="problems" class="problems hide"></div>
   <div id="log"></div>
   <div id="recover" class="hide">
     <p id="recoverMsg" class="note"></p>
@@ -85,6 +88,7 @@
 <section class="card hide" id="step3">
   <h3 style="margin-top:0">완료되었습니다</h3>
   <div id="summary" class="note"></div>
+  <div id="problems3" class="problems hide"></div>
   <div id="toast" class="toast"></div>
   <div class="row">
     <button id="dlLedger">지출현황 엑셀 받기</button>
@@ -106,6 +110,13 @@ const $ = s => document.querySelector(s);
 let picked = [], jobId = null, timer = null;
 
 const won = n => n == null ? '<span style="color:#b91c1c">읽지 못함</span>' : n.toLocaleString('ko-KR') + '원';
+// 올리지 못했거나 읽지 못한 파일을 눈에 띄게 보여 준다 (이름과 이유)
+function showProblems(el, list){
+  if (!el) return;
+  if (!list || !list.length) { el.classList.add('hide'); el.innerHTML = ''; return; }
+  el.innerHTML = `<b>${list.length}개 파일은 처리되지 않았습니다.</b> 아래 파일은 결과와 엑셀에 들어 있지 않으니, 확인한 뒤 따로 다시 올려 주세요.<ul>` + list.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>';
+  el.classList.remove('hide');
+}
 const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 const uploadApi = typeof ReceiptUpload === 'undefined' ? null : ReceiptUpload;
@@ -348,6 +359,7 @@ async function poll(){
   $('#phase').textContent = s.state === 'queued' ? `대기 중 (앞에 ${s.queue_ahead}건)` : s.phase;
   $('#pbar').style.width = (s.progress || 0) + '%';
   $('#pct').textContent = `${s.progress || 0}%  ·  영수증 ${s.file_count}개` + (s.skipped?.length ? `  ·  제외 ${s.skipped.length}개` : '');
+  showProblems($('#problems'), (s.skipped || []).concat((s.failed || []).map(f => f.name + ' (' + f.reason + ')')));
   const lg = $('#log'); lg.textContent = (s.log_tail || []).join('\n'); lg.scrollTop = lg.scrollHeight;
   if (s.state === 'done') { stopPolling(); showResult(token); }
   if (s.state === 'error') {
@@ -418,6 +430,7 @@ async function showResult(token){
   hideRecover();
   $('#step2').classList.add('hide'); $('#step3').classList.remove('hide');
   ROWS = d.rows; DIRTY = !!d.ledger_dirty; EDIT = null; render();
+  showProblems($('#problems3'), d.problems);
 }
 
 function startEdit(i){ EDIT = i; render(); }

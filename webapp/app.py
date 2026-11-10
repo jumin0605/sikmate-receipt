@@ -173,16 +173,78 @@ def add_log(job_id: str, line: str):
 work_q: "queue.Queue[str]" = queue.Queue()
 
 
+def clean_receipt_name(name: str) -> str:
+    """정리본 이름(예: 26.08.05_정리.jpg)을 올린 파일 이름처럼 보이게 되돌린다."""
+    return re.sub(r"_정리(?=\.\w+(?: p\d+)?$)", "", name.strip())
+
+
+class ProblemTracker:
+    """처리 로그 줄에서 '읽지 못한 파일'을 골라낸다.
+
+    기존 도구는 한 장이 실패해도 나머지를 계속 처리하고 실패는 로그 한 줄로만 남긴다.
+    로그는 화면에 마지막 12줄만 보이므로, 실패한 파일 이름과 이유를 따로 모아 둔다.
+    """
+
+    def __init__(self):
+        self.items: list[dict] = []
+        self._label: str | None = None
+        self._seen: set[tuple] = set()
+
+    def _add(self, name: str, reason: str):
+        item = {"name": clean_receipt_name(name), "reason": reason.strip()[:120]}
+        key = (item["name"], item["reason"])
+        if key in self._seen:
+            return None
+        self._seen.add(key)
+        self.items.append(item)
+        return item
+
+    def feed(self, msg: str):
+        """새로 모은 항목이 있으면 돌려준다. 없으면 None."""
+        msg = str(msg).rstrip("\n")
+        m = re.match(r"\[실패\] (.+?): (.*)$", msg)               # 사진 정리 단계
+        if m:
+            return self._add(m.group(1), m.group(2))
+        m = re.match(r"\[\d+/\d+\] 실패 (.+?): (.*)$", msg)        # 판독 단계: 파일을 열지 못함
+        if m:
+            return self._add(m.group(1), m.group(2))
+        m = re.match(r"\[\d+/\d+\] (?!실패|건너뜀|다시 읽기)(.+)$", msg)   # 판독 시작 줄
+        if m:
+            self._label = m.group(1).strip()
+            return None
+        if msg.startswith("[재판독"):
+            self._label = None      # 재판독 실패는 1차 결과가 그대로 남으므로 문제로 보지 않는다
+            return None
+        m = re.match(r"\s+실패: (.*)$", msg)                       # 판독 단계: AI 응답 실패
+        if m and self._label:
+            return self._add(self._label, m.group(1))
+        m = re.match(r"\[중단\] (.*)$", msg)                       # 키/권한 문제로 남은 장을 못 읽음
+        if m:
+            return self._add("남은 영수증", "읽다가 중단되었습니다: " + m.group(1))
+        return None
+
+
+def problem_lines(st: dict) -> list[str]:
+    """화면에 보여 줄 '제외되었거나 읽지 못한 파일' 목록."""
+    out = [str(s) for s in (st.get("skipped") or [])]
+    for f in st.get("failed") or []:
+        out.append(f"{f.get('name')} ({f.get('reason')})")
+    return out
+
 def run_job(job_id: str):
     jd = JOBS_DIR / job_id
     src, cleaned, jdir = jd / "원본", jd / "정리결과", jd / "json"
     st = read_status(job_id)
     total = st["file_count"]
     state = {"phase": "정리", "done": 0}
+    tracker = ProblemTracker()
 
     def log(msg=""):
         msg = str(msg)
         add_log(job_id, msg)
+        found = tracker.feed(msg)
+        if found:
+            write_status(job_id, failed=list(tracker.items))
         # 진행률: 정리 0~25%, 판독 25~90%, 장부 90~100%
         if state["phase"] == "정리" and (msg.startswith("[완료]") or msg.startswith("[실패]")):
             state["done"] += 1
@@ -197,7 +259,7 @@ def run_job(job_id: str):
         # 이전 시도의 정리본·json·엑셀·zip 이 남아 있으면 새 결과와 섞인다.
         # 원본 폴더는 지우지 않는다.
         clear_derived_outputs(jd)
-        write_status(job_id, state="running", phase="사진 정리 중", progress=1,
+        write_status(job_id, state="running", phase="사진 정리 중", progress=1, failed=[],
                      started=datetime.now().isoformat(timespec="seconds"))
         written = core.run(str(src), out_dir=str(cleaned), bg="white", fmt="jpg",
                            deskew=True, clean=True, rotate_upright=False,
@@ -460,7 +522,8 @@ def job_receipts(job_id: str, rc_auth: str | None = Cookie(default=None)):
     rows = _receipt_rows(job_id)
     return {"rows": rows, "need_count": sum(r["needs_check"] for r in rows),
             "edited_count": sum(r["edited"] for r in rows),
-            "ledger_dirty": bool(read_status(job_id).get("ledger_dirty"))}
+            "ledger_dirty": bool(read_status(job_id).get("ledger_dirty")),
+            "problems": problem_lines(read_status(job_id))}
 
 
 class ReceiptFix(BaseModel):
