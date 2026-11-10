@@ -61,6 +61,8 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 # (영수증_정리_도구.py 는 import 될 때 환경변수를 읽으므로 load_core() 보다 먼저 설정)
 MODEL = os.environ.setdefault("GEMINI_MODEL", "gemini-3.8-flash")
 PRO_MODEL = os.environ.setdefault("GEMINI_PRO_MODEL", "gemini-4-argon")
+# 위 모델이 없어졌을 때 먼저 시도할 대체 모델(쉼표로 구분). 비워 두면 이 키로 쓸 수 있는 최신 정식 모델을 자동으로 찾는다.
+os.environ.setdefault("GEMINI_FALLBACK_MODELS", "")
 # 서버는 메모리가 작아서(512MB) 휴대폰 원본 사진(4000px 이상)을 그대로 처리하면 한 장에도 한도를 넘는다.
 # 사진을 읽을 때 긴 변을 이 값으로 줄인다. 0이면 줄이지 않는다. (영수증_정리_도구.py 가 import 될 때 읽음)
 # 3000px 로는 큰 사진(약 3500x4600)에서 512MB 를 넘어 서버가 죽었다(2026-11-10). 재판독 해상도와 같은 2400px 로 낮춘다.
@@ -173,6 +175,16 @@ def add_log(job_id: str, line: str):
 work_q: "queue.Queue[str]" = queue.Queue()
 
 
+SERVICE_TROUBLE_SHORT = "판독 서비스에 문제가 생겨 읽기를 중단했습니다. 잠시 후 다시 올려 주세요. 계속되면 관리자에게 알려 주세요."
+SERVICE_TROUBLE = ("영수증 판독 서비스에 일시적인 문제가 있어 처리하지 못했습니다. "
+                   "잠시 후 다시 시도해 주세요. 계속되면 관리자에게 알려 주세요.")
+
+
+def admin_note(job_id: str, msg: str):
+    """관리자가 봐야 할 내용은 사용자 화면이 아니라 서버 로그(Render Logs)에 남긴다."""
+    print(f"[관리자 확인] job={job_id} {msg}", flush=True)
+
+
 def clean_receipt_name(name: str) -> str:
     """정리본 이름(예: 26.08.05_정리.jpg)을 올린 파일 이름처럼 보이게 되돌린다."""
     return re.sub(r"_정리(?=\.\w+(?: p\d+)?$)", "", name.strip())
@@ -188,6 +200,7 @@ class ProblemTracker:
     def __init__(self):
         self.items: list[dict] = []
         self._label: str | None = None
+        self._recheck = False       # 재판독 단계에서는 중단돼도 1차 결과가 남는다
         self._seen: set[tuple] = set()
 
     def _add(self, name: str, reason: str):
@@ -214,13 +227,15 @@ class ProblemTracker:
             return None
         if msg.startswith("[재판독"):
             self._label = None      # 재판독 실패는 1차 결과가 그대로 남으므로 문제로 보지 않는다
+            self._recheck = True
             return None
         m = re.match(r"\s+실패: (.*)$", msg)                       # 판독 단계: AI 응답 실패
         if m and self._label:
             return self._add(self._label, m.group(1))
         m = re.match(r"\[중단\] (.*)$", msg)                       # 키/권한 문제로 남은 장을 못 읽음
-        if m:
-            return self._add("남은 영수증", "읽다가 중단되었습니다: " + m.group(1))
+        if m and not self._recheck:
+            # 자세한 원인(모델 이름, 키 문제)은 사용자에게 필요 없고 서버 로그에만 남긴다
+            return self._add("남은 영수증", SERVICE_TROUBLE_SHORT)
         return None
 
 
@@ -242,6 +257,8 @@ def run_job(job_id: str):
     def log(msg=""):
         msg = str(msg)
         add_log(job_id, msg)
+        if msg.startswith(("[중단]", "[모델 대체]", "[재판독 건너뜀]")):
+            admin_note(job_id, msg)
         found = tracker.feed(msg)
         if found:
             write_status(job_id, failed=list(tracker.items))
@@ -286,6 +303,11 @@ def run_job(job_id: str):
         write_status(job_id, state="done", phase="완료", progress=100,
                      finished=datetime.now().isoformat(timespec="seconds"),
                      ledger=Path(xlsx).name)
+    except core.JsonSetupError as e:
+        # 키·모델 문제는 사용자가 고칠 수 없다. 쉬운 말로 알리고 원인은 서버 로그에 남긴다.
+        admin_note(job_id, f"판독 서비스 설정 문제: {e}")
+        add_log(job_id, "[오류] 판독 서비스에 문제가 있어 처리하지 못했습니다.")
+        write_status(job_id, state="error", phase="오류", error=SERVICE_TROUBLE)
     except Exception as e:  # noqa: BLE001
         add_log(job_id, f"[오류] {e}")
         write_status(job_id, state="error", phase="오류", error=str(e)[:300])

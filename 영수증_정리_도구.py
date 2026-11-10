@@ -3367,19 +3367,92 @@ def json_client():
     return genai.Client(api_key=key)
 
 
-def json_preflight(client, model, log=print):
-    """사진을 보내기 전에 키와 모델이 살아 있는지 한 번만 확인한다."""
+JSON_FALLBACK_MODELS = [m.strip() for m in os.environ.get("GEMINI_FALLBACK_MODELS", "").split(",")
+                        if m.strip()]
+
+
+def json_model_gone(e):
+    """모델 이름이 없어졌거나 더 이상 지원하지 않는 경우 (키·결제 문제와 구분한다)."""
+    s = str(e)
+    return any(t in s for t in ("NOT_FOUND", "is not found for API version",
+                                "is not supported for generateContent"))
+
+
+def json_discover_models(client, kind):
+    """지금 이 키로 쓸 수 있는 gemini-숫자-flash(또는 -pro) 모델을 최신 순으로 돌려준다.
+
+    preview/lite/image 등 이름에 덧붙는 것은 일부러 뺀다. 이름이 정확히 맞는 정식 모델만 본다.
+    """
     try:
-        client.models.generate_content(model=model, contents="ping")
+        listed = list(client.models.list())
+    except Exception:
+        return []
+    pat = re.compile(r"^(?:models/)?gemini-(\d+(?:\.\d+)?)-%s$" % re.escape(kind))
+    found = []
+    for m in listed:
+        name = getattr(m, "name", "") or ""
+        hit = pat.match(name)
+        if not hit:
+            continue
+        actions = getattr(m, "supported_actions", None)
+        if actions and "generateContent" not in actions:
+            continue
+        found.append((float(hit.group(1)), name.replace("models/", "")))
+    found.sort(reverse=True)
+    return [n for _, n in found]
+
+
+def json_resolve_model(client, model, log=print):
+    """사진을 보내기 전에 키와 모델이 살아 있는지 확인하고, 쓸 모델 이름을 돌려준다.
+
+    모델이 없어졌으면 GEMINI_FALLBACK_MODELS, 그다음 이 키로 쓸 수 있는 최신 정식 모델,
+    마지막으로 gemini-flash-latest 같은 별칭 순으로 대신 쓸 모델을 찾는다.
+    키가 틀렸거나 결제 문제면 모델을 바꿔도 소용없으므로 바로 멈춘다.
+    """
+    def ping(name):
+        client.models.generate_content(model=name, contents="ping")
+
+    try:
+        ping(model)
+        return model
     except Exception as e:
-        if json_is_fatal(e):
+        if json_model_gone(e):
+            reason = json_short_err(e)
+        elif json_is_fatal(e):
             raise JsonSetupError(
                 f"API 키 또는 모델을 쓸 수 없습니다: {json_short_err(e)}\n"
                 "  - 키가 맞는지 (aistudio.google.com/apikey 에서 복사한 값 그대로인지)\n"
                 f"  - 모델 이름({model})이 맞는지  확인하세요."
             )
-        log(f"  ! 사전 확인을 건너뜁니다 ({json_short_err(e)})")
+        else:
+            log(f"  ! 사전 확인을 건너뜁니다 ({json_short_err(e)})")
+            return model
 
+    kind = "pro" if "pro" in model.lower() else "flash"
+    candidates, seen = [], {model}
+    for name in (JSON_FALLBACK_MODELS + json_discover_models(client, kind)
+                 + [f"gemini-{kind}-latest"]):
+        if name not in seen:
+            seen.add(name)
+            candidates.append(name)
+    for name in candidates[:6]:
+        try:
+            ping(name)
+        except Exception as e2:
+            if json_is_fatal(e2) and not json_model_gone(e2):
+                raise JsonSetupError(f"API 키 또는 모델을 쓸 수 없습니다: {json_short_err(e2)}")
+            continue
+        log(f"[모델 대체] {model} 을(를) 쓸 수 없어({reason}) {name} 로 대신 읽습니다.")
+        return name
+    raise JsonSetupError(
+        f"모델 {model} 을(를) 쓸 수 없고, 대신 쓸 모델도 찾지 못했습니다: {reason}\n"
+        "  - GEMINI_MODEL / GEMINI_FALLBACK_MODELS 환경변수를 확인하세요."
+    )
+
+
+def json_preflight(client, model, log=print):
+    """json_resolve_model 의 예전 이름. 쓸 모델 이름을 돌려준다."""
+    return json_resolve_model(client, model, log=log)
 
 def json_page_png(img, max_side=None):
     """정리 단계에서 쓰는 BGR ndarray 한 장을 Gemini 에 보낼 PNG 바이트로 만든다."""
@@ -3696,7 +3769,8 @@ def extract_json(target, out_dir=None, model=None, pro_model=None, auto_pro=True
 
     log(f"\nJSON 추출 {len(files)}개  ->  {out_dir}")
     client = json_client()
-    json_preflight(client, model, log=log)   # 키가 틀렸으면 사진을 보내기 전에 멈춘다
+    # 키가 틀렸으면 사진을 보내기 전에 멈춘다. 모델이 없어졌으면 쓸 수 있는 모델로 바꾼다.
+    model = json_resolve_model(client, model, log=log)
 
     # 1차는 싼 모델로 훑고, 검산에 걸린 장만 뒤에서 Pro 로 다시 읽는다.
     use_pro = bool(auto_pro and pro_model and pro_model != model)
@@ -3778,7 +3852,15 @@ def extract_json(target, out_dir=None, model=None, pro_model=None, auto_pro=True
     # 검산에 걸린 장만 좋은 모델로 자동 재판독한다.
     # 1차 결과는 _1차판독 에 남겨 두어 나중에 비교할 수 있게 한다.
     if pro_todo:
-        log(f"\n검산에 걸린 {len(pro_todo)}장을 {pro_model} 로 다시 읽습니다.")
+        try:
+            pro_model = json_resolve_model(client, pro_model, log=log)
+        except JsonSetupError as e:
+            log(f"[재판독 건너뜀] {json_short_err(e)}  (1차 결과를 그대로 둡니다)")
+            pro_todo = []
+        if pro_model == model:
+            pro_todo = []          # 대신 쓸 모델이 1차 모델과 같으면 다시 읽어도 소용없다
+        if pro_todo:
+            log(f"\n검산에 걸린 {len(pro_todo)}장을 {pro_model} 로 다시 읽습니다.")
         for n, (idx, page, dst, label) in enumerate(pro_todo, 1):
             log(f"[재판독 {n}/{len(pro_todo)}] {label}")
             try:

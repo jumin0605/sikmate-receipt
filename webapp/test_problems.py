@@ -10,13 +10,15 @@ TREE = ast.parse(SRC)
 
 def load(*names):
     """app.py 전체를 import 하지 않고(서버 스레드가 뜬다) 필요한 정의만 꺼낸다."""
-    body = [n for n in TREE.body if getattr(n, "name", None) in names]
+    body = [n for n in TREE.body
+            if getattr(n, "name", None) in names
+            or any(getattr(t, "id", None) in names for t in getattr(n, "targets", []))]
     ns = {"re": re}
     exec(compile(ast.Module(body=body, type_ignores=[]), "app.py", "exec"), ns)
     return ns
 
 
-NS = load("clean_receipt_name", "ProblemTracker", "problem_lines")
+NS = load("SERVICE_TROUBLE_SHORT", "clean_receipt_name", "ProblemTracker", "problem_lines")
 ProblemTracker, problem_lines = NS["ProblemTracker"], NS["problem_lines"]
 
 
@@ -47,6 +49,14 @@ class ProblemTrackerTests(unittest.TestCase):
     def test_fatal_stop_is_reported(self):
         items = feed_all(["[중단] API 키가 올바르지 않습니다"])
         self.assertEqual(items[0]["name"], "남은 영수증")
+
+    def test_fatal_stop_hides_technical_reason(self):
+        items = feed_all(["[중단] models/x is not found for API version v1beta"])
+        self.assertNotIn("models/x", items[0]["reason"])
+
+    def test_stop_during_recheck_is_not_a_problem(self):
+        items = feed_all(["[재판독 1/1] x.jpg", "[중단] quota"])
+        self.assertEqual(items, [])
 
     def test_duplicates_are_listed_once(self):
         items = feed_all(["[실패] b.jpg: x", "[실패] b.jpg: x"])
