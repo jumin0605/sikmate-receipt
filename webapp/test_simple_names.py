@@ -36,16 +36,29 @@ simple = ans["simple_upload_stem"]
 class SimpleNames(unittest.TestCase):
     def test_kakao_variants(self):
         cases = {
-            "KakaoTalk_20260813_142355123": "26.08.13_142355",
-            "KakaoTalk_20260813_142355123_01": "26.08.13_142355",
-            "KakaoTalk_Photo_2026-08-13-14-23-55": "26.08.13_142355",
-            "KakaoTalk_Photo_2026-08-13-14-23-55 001": "26.08.13_142355",
-            "KakaoTalk_Image_2026-08-13-14-23-55": "26.08.13_142355",
-            "카카오톡_20260813_142355": "26.08.13_142355",
-            "kakaotalk_20260813_142355 (1)": "26.08.13_142355",
+            "KakaoTalk_20260813_142355123": "26.08.13",
+            "KakaoTalk_20260813_142355123_01": "26.08.13",
+            "KakaoTalk_Photo_2026-08-13-14-23-55": "26.08.13",
+            "KakaoTalk_Photo_2026-08-13-14-23-55 001": "26.08.13",
+            "KakaoTalk_Image_2026-08-13-14-23-55": "26.08.13",
+            "카카오톡_20260813_142355": "26.08.13",
+            "kakaotalk_20260813_142355 (1)": "26.08.13",
         }
         for src, want in cases.items():
             self.assertEqual(simple(src), want, src)
+
+    def test_same_day_numbering_in_upload(self):
+        # create_job 의 번호 붙이는 규칙: 첫 장은 그대로, 다음부터 _2, _3
+        used, out = set(), []
+        for s in ("KakaoTalk_20260813_142355123", "KakaoTalk_20260813_142401456", "KakaoTalk_Photo_2026-08-13-15-00-00"):
+            stem = simple(s)
+            final, n = stem, 2
+            while final.lower() in used:
+                final = f"{stem}_{n}"
+                n += 1
+            used.add(final.lower())
+            out.append(final)
+        self.assertEqual(out, ["26.08.13", "26.08.13_2", "26.08.13_3"])
 
     def test_not_kakao_or_invalid_left_alone(self):
         for s in ("영수증 사진", "IMG_1234", "KakaoTalk_20261399_142355123", "KakaoTalk_20260813_256100"):

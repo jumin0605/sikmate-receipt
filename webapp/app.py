@@ -200,7 +200,7 @@ def _guess_year_hint(names: list[str]) -> str | None:
 
 def simple_upload_stem(stem: str, year_hint: str | None = None) -> str:
     """올린 파일 이름을 단순하게 정리한다. 카카오톡 사진이면 'KakaoTalk_20260813_142355123' 이
-    '26.08.13_142355' 로, 'YYYYMMDD', '8.21 충북농산' 같은 날짜 이름은 'YY.MM.DD ...' 로 바뀐다.
+    '26.08.13' 으로, 'YYYYMMDD', '8.21 충북농산' 같은 날짜 이름은 'YY.MM.DD ...' 로 바뀐다.
     날짜로 읽히지 않는 이름은 그대로 둔다. 같은 이름이 겹치면 호출한 쪽에서 번호를 붙인다."""
     try:
         new = core.normalize_stem(stem, year_hint)
