@@ -846,6 +846,29 @@ def process_image(img, bg="white", deskew=True, clean=True, rotate_upright=False
     return img
 
 
+# 카카오톡이 붙이는 이름들. 날짜와 시각 뒤의 군더더기(밀리초, 일련번호, 복사본 표시)는 버린다.
+#   KakaoTalk_20260813_142355123.jpg         -> 26.08.13_142355
+#   KakaoTalk_20260813_142355123_01.jpg      -> 26.08.13_142355   (겹치면 뒤에 _2 가 붙는다)
+#   KakaoTalk_Photo_2026-08-13-14-23-55.jpeg -> 26.08.13_142355
+#   카카오톡_20260813_142355 (1)             -> 26.08.13_142355
+_KAKAO_PREFIX = (r"^(?:kakao\s*talk|카카오\s*톡)[\s_\-]*"
+                 r"(?:photo|image|video|사진|이미지|동영상)?[\s_\-]*")
+_KAKAO_RE = re.compile(
+    _KAKAO_PREFIX + r"(\d{4})[-.]?(\d{2})[-.]?(\d{2})[\s_\-]*"
+    r"(\d{2})[-:._]?(\d{2})[-:._]?(\d{2})", re.IGNORECASE)
+
+
+def _kakao_stem(s):
+    m = _KAKAO_RE.match(s)
+    if not m:
+        return None
+    yy, mo, dd, hh, mi, ss = m.groups()
+    if not (1 <= int(mo) <= 12 and 1 <= int(dd) <= 31
+            and int(hh) < 24 and int(mi) < 60 and int(ss) < 60):
+        return None
+    return f"{yy[2:]}.{mo}.{dd}_{hh}{mi}{ss}"
+
+
 def normalize_stem(stem, default_year=None):
     """파일 이름의 날짜 부분을 'YY.MM.DD' 로 통일한다.
 
@@ -857,6 +880,11 @@ def normalize_stem(stem, default_year=None):
     날짜로 읽히지 않으면 원래 이름을 그대로 돌려준다.
     """
     s = stem.strip()
+
+    # 카카오톡으로 받은 사진: 날짜와 시각만 남기고 군더더기를 뗀다
+    kakao = _kakao_stem(s)
+    if kakao:
+        return kakao
 
     # 20260810 / 2026081704 처럼 붙여 쓴 형태
     m = re.match(r"^(\d{4})(\d{2})(\d{2})(.*)$", s)

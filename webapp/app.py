@@ -190,6 +190,26 @@ def clean_receipt_name(name: str) -> str:
     return re.sub(r"_정리(?=\.\w+(?: p\d+)?$)", "", name.strip())
 
 
+def _guess_year_hint(names: list[str]) -> str | None:
+    """올린 파일 이름들에서 가장 많이 보이는 두 자리 연도(날짜에 연도가 빠진 이름용)."""
+    try:
+        return core.guess_year([_decode_filename(n) for n in names], "")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def simple_upload_stem(stem: str, year_hint: str | None = None) -> str:
+    """올린 파일 이름을 단순하게 정리한다. 카카오톡 사진이면 'KakaoTalk_20260813_142355123' 이
+    '26.08.13_142355' 로, 'YYYYMMDD', '8.21 충북농산' 같은 날짜 이름은 'YY.MM.DD ...' 로 바뀐다.
+    날짜로 읽히지 않는 이름은 그대로 둔다. 같은 이름이 겹치면 호출한 쪽에서 번호를 붙인다."""
+    try:
+        new = core.normalize_stem(stem, year_hint)
+    except Exception:  # noqa: BLE001
+        return stem
+    new = re.sub(r'[\\/:*?"<>|]', "_", new or "").strip()
+    return new or stem
+
+
 class ProblemTracker:
     """처리 로그 줄에서 '읽지 못한 파일'을 골라낸다.
 
@@ -457,6 +477,7 @@ async def create_job(files: list[UploadFile] = File(...), rc_auth: str | None = 
     (jd / "원본").mkdir(parents=True)
     saved, skipped = 0, []
     used = set()
+    year_hint = _guess_year_hint([uf.filename or "" for uf in files])
     for uf in files:
         name = Path(_decode_filename(uf.filename or "")).name
         ext = Path(name).suffix.lower()
@@ -464,6 +485,7 @@ async def create_job(files: list[UploadFile] = File(...), rc_auth: str | None = 
             skipped.append(f"{name} (지원하지 않는 형식)")
             continue
         stem = re.sub(r'[\\/:*?"<>|]', "_", Path(name).stem).strip() or "영수증"
+        stem = simple_upload_stem(stem, year_hint)
         final = f"{stem}{ext}"
         k = 2
         while final.lower() in used:
