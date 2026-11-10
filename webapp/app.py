@@ -12,7 +12,8 @@
   MAX_FILES         한 번에 올릴 수 있는 파일 수 (기본 60)
   MAX_FILE_MB       파일 하나 크기 상한 (기본 25)
   DAILY_FILE_LIMIT  하루 전체 처리 장수 상한. 요금 폭주 방지 (기본 400)
-  RECEIPT_MAX_SIDE  사진 긴 변 상한(px). 메모리 절약용 (기본 3000, 0이면 끔)
+  RECEIPT_MAX_SIDE  사진 긴 변 상한(px). 메모리 절약용 (기본 2400, 0이면 끔)
+  MAX_RESUMES       서버가 재시작될 때 같은 작업을 다시 시도하는 최대 횟수 (기본 1)
 """
 
 from __future__ import annotations
@@ -62,7 +63,10 @@ MODEL = os.environ.setdefault("GEMINI_MODEL", "gemini-3.8-flash")
 PRO_MODEL = os.environ.setdefault("GEMINI_PRO_MODEL", "gemini-4-argon")
 # 서버는 메모리가 작아서(512MB) 휴대폰 원본 사진(4000px 이상)을 그대로 처리하면 한 장에도 한도를 넘는다.
 # 사진을 읽을 때 긴 변을 이 값으로 줄인다. 0이면 줄이지 않는다. (영수증_정리_도구.py 가 import 될 때 읽음)
-os.environ.setdefault("RECEIPT_MAX_SIDE", "3000")
+# 3000px 로는 큰 사진(약 3500x4600)에서 512MB 를 넘어 서버가 죽었다(2026-11-10). 재판독 해상도와 같은 2400px 로 낮춘다.
+os.environ.setdefault("RECEIPT_MAX_SIDE", "2400")
+# 같은 작업 때문에 서버가 계속 죽으면 재시작마다 다시 시도하며 무한 반복된다. 이 횟수까지만 다시 시도한다.
+MAX_RESUMES = int(os.environ.get("MAX_RESUMES", "1"))
 
 
 def _decode_filename(name: str) -> str:
@@ -245,7 +249,14 @@ def _resume_jobs_on_startup():
     resumable, stalled = classify_on_restart(JOBS_DIR, ALLOWED_EXT)
     for job_id in resumable:
         try:
-            write_status(job_id, state="queued", phase="서버가 다시 시작되어 대기 중", progress=0)
+            tries = int(read_status(job_id).get("resume_count") or 0)
+            if tries >= MAX_RESUMES:
+                add_log(job_id, "[중단] 이 작업을 처리하다 서버가 반복해서 멈춰 더 시도하지 않습니다.")
+                write_status(job_id, state="error", phase="오류",
+                             error="처리 중 서버 메모리가 부족해 멈췄습니다. 사진 수를 줄이거나 큰 사진을 나눠서 다시 올려 주세요.")
+                continue
+            write_status(job_id, state="queued", phase="서버가 다시 시작되어 대기 중", progress=0,
+                         resume_count=tries + 1)
             add_log(job_id, "[재시작] 디스크에 원본이 모두 남아 있어 다시 처리합니다.")
             work_q.put(job_id)
         except OSError:

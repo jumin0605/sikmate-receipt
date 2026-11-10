@@ -39,6 +39,7 @@ JSON 추출은 Gemini 를 씁니다. 싼 모델로 한 번 훑고, 합계 검산
 
 import argparse
 import csv
+import gc
 import hashlib
 import importlib
 import io
@@ -132,7 +133,17 @@ def load_pages(path):
 
     # EXIF 회전 정보를 먼저 적용한 뒤 OpenCV로 넘긴다
     with Image.open(path) as im:
-        im = ImageOps.exif_transpose(im).convert("RGB")
+        if LOAD_MAX_SIDE > 0:
+            # 원본 크기로 풀어 놓은 뒤 줄이면 그 순간 메모리가 몇 배로 튄다.
+            # JPEG 는 풀 때부터 작게(1/2, 1/4) 읽고, 나머지도 numpy 로 넘기기 전에 줄인다.
+            r = LOAD_MAX_SIDE / max(im.size)
+            if r < 1:
+                im.draft("RGB", (max(1, int(im.size[0] * r)), max(1, int(im.size[1] * r))))
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            if max(im.size) > LOAD_MAX_SIDE:
+                im.thumbnail((LOAD_MAX_SIDE, LOAD_MAX_SIDE), Image.LANCZOS)
+        else:
+            im = ImageOps.exif_transpose(im).convert("RGB")
         bgr = cv2.cvtColor(np.array(im), cv2.COLOR_RGB2BGR)
         del im
         return [cap_side(bgr)]
@@ -1041,6 +1052,10 @@ def run(target, out_dir=None, bg="white", fmt="jpg", deskew=True, clean=True,
             log(f"[완료] {os.path.basename(src)} -> {os.path.basename(paths[0])}{extra}")
         except Exception as e:  # 한 장이 실패해도 나머지는 계속
             log(f"[실패] {os.path.basename(src)}: {e}")
+        finally:
+            # 큰 배열을 바로 돌려줘서 장수가 많아도 메모리가 쌓이지 않게 한다
+            pages = done = None
+            gc.collect()
     log(f"저장 위치: {out_dir}")
     return written
 
