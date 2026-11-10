@@ -52,7 +52,7 @@ class UploadContractTests(unittest.TestCase):
             "snapshotDataTransfer",
             "collectSnapshot",
             "submitJob",
-            "한 번에 10개까지",
+            "한 번에 40개까지",
             "10MB",
             'id="retryPoll"',
             'id="newUpload"',

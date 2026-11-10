@@ -19,7 +19,7 @@ services:
         value: "7"
       - key: DAILY_FILE_LIMIT
         value: "400"
-      - key: MAX_FILES          # 시험 서버: 화면 문구(10개/10MB)와 맞춤
-        value: "10"
+      - key: MAX_FILES          # 시험 서버: 화면 문구(40개/10MB)와 맞춤
+        value: "40"
       - key: MAX_FILE_MB
         value: "10"

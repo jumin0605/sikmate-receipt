@@ -9,7 +9,7 @@
   APP_ACCESS_CODE   (권장) 파일럿 참여자에게만 알려 주는 접속 코드. 비우면 누구나 접속
   DATA_DIR          작업 파일 저장 위치 (기본 ./data)
   RETENTION_DAYS    작업 파일 보관 일수 (기본 7)
-  MAX_FILES         한 번에 올릴 수 있는 파일 수 (기본 60)
+  MAX_FILES         한 번에 올릴 수 있는 파일 수 (기본 40)
   MAX_FILE_MB       파일 하나 크기 상한 (기본 25)
   DAILY_FILE_LIMIT  하루 전체 처리 장수 상한. 요금 폭주 방지 (기본 400)
   RECEIPT_MAX_SIDE  사진 긴 변 상한(px). 메모리 절약용 (기본 2400, 0이면 끔)
@@ -47,7 +47,7 @@ HERE = Path(__file__).resolve().parent
 load_project_env(HERE.parent)
 DATA_DIR = Path(os.environ.get("DATA_DIR", HERE / "data")).resolve()
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "7"))
-MAX_FILES = int(os.environ.get("MAX_FILES", "60"))
+MAX_FILES = int(os.environ.get("MAX_FILES", "40"))
 MAX_FILE_MB = int(os.environ.get("MAX_FILE_MB", "25"))
 DAILY_FILE_LIMIT = int(os.environ.get("DAILY_FILE_LIMIT", "400"))
 ACCESS_CODE = os.environ.get("APP_ACCESS_CODE", "").strip()
