@@ -64,6 +64,21 @@
     <small>폴더를 그대로 끌어다 놓으면 하위 폴더의 파일까지 찾습니다. JPG · JPEG · PNG · WEBP · BMP · TIF · TIFF · PDF / 시험 서버: 한 번에 40개까지 / 파일 하나 10MB까지</small></label>
   <input id="pick" type="file" multiple accept=".jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.pdf,image/jpeg,image/png,image/webp,image/bmp,image/tiff,application/pdf">
   <div id="files"></div>
+  <details id="cleanOpts" style="margin-top:14px" open>
+    <summary style="cursor:pointer;font-weight:bold">사진 정리 옵션</summary>
+    <div style="display:grid;gap:8px;margin-top:10px;font-size:14px;line-height:1.5">
+      <label><input type="checkbox" id="optCrop" checked> <b>영수증 영역만 잘라내기</b> <span class="note">사진에서 영수증을 찾아 주변 책상·손 등을 잘라냅니다</span></label>
+      <label><input type="checkbox" id="optDeskew" checked> <b>기울기 바로잡기</b> <span class="note">삐뚤게 찍힌 영수증을 똑바로 세웁니다</span></label>
+      <label><input type="checkbox" id="optWhiten" checked> <b>글자 잘 보이게 밝기 정돈</b> <span class="note">종이를 하얗게, 글자를 또렷하게 만듭니다</span></label>
+      <label><b>배경</b>
+        <select id="optBg" style="font-size:14px;padding:4px;margin-left:6px">
+          <option value="white" selected>흰색으로 (권장)</option>
+          <option value="transparent">투명하게 (PNG로 저장, 용량이 커집니다)</option>
+          <option value="none">지우지 않고 그대로</option>
+        </select></label>
+      <div class="note">처음 쓰신다면 그대로 두세요. 결과가 이상하면 옵션을 바꿔서 다시 올려 보세요. 선택한 값은 이 브라우저에 기억됩니다.</div>
+    </div>
+  </details>
   <div class="row"><button id="go" disabled>정리 시작</button><span id="err" style="color:#b91c1c"></span></div>
   <p class="note">파일 이름은 자동으로 단순하게 정리됩니다. 예: KakaoTalk_20260813_142355123.jpg → 26.08.13 (같은 날 사진이 여러 장이면 26.08.13_2, 26.08.13_3 ...), 8.21 충북농산 → 26.08.21 충북농산. 날짜로 읽히지 않는 이름은 그대로 둡니다.</p>
   <p class="note">시험 서버는 재시작·재배포 시 작업 파일이 지워질 수 있으므로 결과는 바로 다운로드해 주세요. 남아 있는 영수증은 정리가 끝난 뒤 7일이 지나면 자동으로 지워지고(아래 '월 누적'에 담은 회차는 45일),  결과 화면의 '지금 삭제' 버튼으로 바로 지울 수도 있습니다.
@@ -121,6 +136,21 @@
 <script>
 const $ = s => document.querySelector(s);
 let picked = [], jobId = null, timer = null;
+
+// ---- 사진 정리 옵션 (이 브라우저에 기억) ----
+const OPT_KEY = 'cleanOpts';
+function readCleanOptions(){
+  const o = {crop: $('#optCrop').checked, deskew: $('#optDeskew').checked, whiten: $('#optWhiten').checked, bg: $('#optBg').value};
+  try { localStorage.setItem(OPT_KEY, JSON.stringify(o)); } catch (e) {}
+  return o;
+}
+(function restoreCleanOptions(){
+  let o = null;
+  try { o = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) {}
+  if (!o) return;
+  ['crop:optCrop', 'deskew:optDeskew', 'whiten:optWhiten'].forEach(p => { const [k, id] = p.split(':'); if (typeof o[k] === 'boolean') $('#' + id).checked = o[k]; });
+  if (['white', 'transparent', 'none'].includes(o.bg)) $('#optBg').value = o.bg;
+})();
 
 const won = n => n == null ? '<span style="color:#b91c1c">읽지 못함</span>' : n.toLocaleString('ko-KR') + '원';
 // 올리지 못했거나 읽지 못한 파일을 눈에 띄게 보여 준다 (이름과 이유)
@@ -240,7 +270,7 @@ if (!uploadApi) {
     $('#go').disabled = true;
     $('#err').textContent = '올리는 중…';
     try {
-      const j = await uploadApi.submitJob(batch, (url, opts) => fetch(url, opts));
+      const j = await uploadApi.submitJob(batch, (url, opts) => fetch(url, opts), readCleanOptions());
       jobId = j.job_id;
       localStorage.setItem('lastJob', jobId);
       startWatching();

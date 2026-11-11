@@ -370,7 +370,7 @@
     return text ? text.slice(0, 300) : '';
   }
 
-  async function submitJob(files, fetchImpl) {
+  async function submitJob(files, fetchImpl, options) {
     var list = toArray(files).filter(Boolean);
     if (!list.length) {
       var emptyErr = new Error(MESSAGES.uploadEmpty);
@@ -385,6 +385,13 @@
     var body = new FormData();
     for (var i = 0; i < list.length; i++) {
       body.append('files', list[i], list[i].name || '영수증');
+    }
+    // 사진 정리 옵션(영수증 영역 자르기, 기울기 보정, 밝기 보정, 배경)
+    if (options && typeof options === 'object') {
+      ['crop', 'deskew', 'whiten'].forEach(function (k) {
+        if (typeof options[k] === 'boolean') body.append('opt_' + k, options[k] ? '1' : '0');
+      });
+      if (typeof options.bg === 'string') body.append('opt_bg', options.bg);
     }
     var response;
     try {

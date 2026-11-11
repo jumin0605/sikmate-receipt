@@ -270,6 +270,27 @@ def problem_lines(st: dict) -> list[str]:
         out.append(f"{f.get('name')} ({f.get('reason')})")
     return out
 
+DEFAULT_OPTIONS = {"crop": True, "deskew": True, "whiten": True, "bg": "white"}
+
+
+def clean_options(raw) -> dict:
+    """사진 정리 옵션(영수증 영역 자르기, 기울기 보정, 배경 처리, 밝기 보정). 리스트에 없는 값은 기본값으로 되돌린다."""
+    o = dict(DEFAULT_OPTIONS)
+    if isinstance(raw, dict):
+        for k in ("crop", "deskew", "whiten"):
+            if isinstance(raw.get(k), bool):
+                o[k] = raw[k]
+        if raw.get("bg") in ("white", "transparent", "none"):
+            o["bg"] = raw["bg"]
+    return o
+
+
+def _flag(v: str | None, default: bool = True) -> bool:
+    if v is None or v == "":
+        return default
+    return str(v).strip().lower() in ("1", "true", "on", "yes")
+
+
 def simplify_cleaned_names(paths) -> list:
     """정리된 사진 이름 끝의 '_정리' 를 뗀다. (26.11.06_정리.jpg -> 26.11.06.jpg)
     떼면 이미 있는 이름과 겹칠 때만 그대로 둔다."""
@@ -318,8 +339,11 @@ def run_job(job_id: str):
         clear_derived_outputs(jd)
         write_status(job_id, state="running", phase="사진 정리 중", progress=1, failed=[],
                      started=datetime.now().isoformat(timespec="seconds"))
-        written = core.run(str(src), out_dir=str(cleaned), bg="white", fmt="jpg",
-                           deskew=True, clean=True, rotate_upright=False,
+        opts = clean_options(st.get("options"))
+        written = core.run(str(src), out_dir=str(cleaned), bg=opts["bg"],
+                           fmt="png" if opts["bg"] == "transparent" else "jpg",
+                           deskew=opts["deskew"], clean=opts["whiten"], crop=opts["crop"],
+                           rotate_upright=False,
                            perspective=False, log=log)
         if not written:
             raise RuntimeError("정리된 영수증이 없습니다. 사진이 올바른지 확인해 주세요.")
@@ -493,7 +517,9 @@ def healthz():
 
 
 @app.post("/api/jobs")
-async def create_job(files: list[UploadFile] = File(...), rc_auth: str | None = Cookie(default=None)):
+async def create_job(files: list[UploadFile] = File(...), rc_auth: str | None = Cookie(default=None),
+                     opt_crop: str | None = Form(None), opt_deskew: str | None = Form(None),
+                     opt_whiten: str | None = Form(None), opt_bg: str | None = Form(None)):
     _check_auth(rc_auth)
     if not os.environ.get("GEMINI_API_KEY"):
         raise HTTPException(500, "서버에 GEMINI_API_KEY 가 설정되어 있지 않습니다.")
@@ -535,7 +561,9 @@ async def create_job(files: list[UploadFile] = File(...), rc_auth: str | None = 
         shutil.rmtree(jd, ignore_errors=True)
         raise HTTPException(400, "처리할 수 있는 파일이 없습니다. " + ", ".join(skipped))
 
-    write_status(job_id, state="queued", phase="대기 중", progress=0, file_count=saved,
+    options = clean_options({"crop": _flag(opt_crop), "deskew": _flag(opt_deskew),
+                             "whiten": _flag(opt_whiten), "bg": opt_bg})
+    write_status(job_id, state="queued", phase="대기 중", progress=0, file_count=saved, options=options,
                  skipped=skipped, created=datetime.now().isoformat(timespec="seconds"))
     work_q.put(job_id)
     return {"job_id": job_id, "file_count": saved, "skipped": skipped}

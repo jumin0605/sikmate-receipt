@@ -797,7 +797,7 @@ def whiten(img, strength=1.0):
 
 
 def process_image(img, bg="white", deskew=True, clean=True, rotate_upright=False,
-                  perspective=False):
+                  perspective=False, crop=True):
     """영수증 한 장을 정리한다.
 
     기본 동작은 '기울기만 바로잡고 문서 밖을 지우는' 것이다. 원근 보정과 세로 세우기는
@@ -817,12 +817,22 @@ def process_image(img, bg="white", deskew=True, clean=True, rotate_upright=False
         if angle is None:
             angle = estimate_text_angle(img)  # 표 선이 없으면 글자 줄로 판단
         if angle is not None and 0.3 <= abs(angle) <= 20:
+            before = mask
             img = rotate_keep(img, angle, border=(255, 255, 255))
             mask = main_document_mask(img)
+            if mask is not None:
+                # 회전으로 생긴 흰 테두리가 종이로 읽히면 자르기가 안 된다.
+                # 회전하기 전의 문서 영역을 같이 돌려, 그 안쪽만 문서로 인정한다.
+                rot = rotate_keep(before, angle, border=0)
+                k = max(3, int(min(img.shape[:2]) * 0.01)) | 1
+                rot = cv2.dilate(rot, np.ones((k, k), np.uint8))
+                narrowed = cv2.bitwise_and(mask, rot)
+                if cv2.countNonZero(narrowed):
+                    mask = narrowed
             if mask is None:
                 return whiten(img) if clean else img
 
-    box = mask_box(mask, img.shape)
+    box = mask_box(mask, img.shape) if crop else None   # crop=False 면 영수증 영역으로 자르지 않는다
     if box is not None:
         # 흐린 인쇄 때문에 덩어리에서 빠진 아래쪽 합계란 같은 부분을 되찾고,
         # 남은 빈 여백은 다시 바짝 줄인다
@@ -1063,7 +1073,7 @@ def rename_sources(target, dry_run=False, log=print, recursive: bool = False):
 
 def run(target, out_dir=None, bg="white", fmt="jpg", deskew=True, clean=True,
         rotate_upright=False, perspective=False, dpi=None, log=print,
-        recursive: bool = False):
+        recursive: bool = False, crop: bool = True):
     global PDF_RENDER_DPI
     if dpi:
         PDF_RENDER_DPI = dpi
@@ -1096,7 +1106,8 @@ def run(target, out_dir=None, bg="white", fmt="jpg", deskew=True, clean=True,
             pages = load_pages(src)
             done = [
                 process_image(p, bg=bg, deskew=deskew, clean=clean,
-                              rotate_upright=rotate_upright, perspective=perspective)
+                              rotate_upright=rotate_upright, perspective=perspective,
+                              crop=crop)
                 for p in pages
             ]
             dst = output_path_for(src, out_dir, fmt, year, taken)
