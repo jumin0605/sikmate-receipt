@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>영수증 정리 - 사진만 올리면 지출현황 엑셀이 완성됩니다</title>
+<title>식담온 영수증 정리 - 사진만 올리면 지출현황 엑셀이 완성됩니다</title>
 <style>
   *{box-sizing:border-box}
   body{margin:0;font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;background:#f4f6f8;color:#1f2937}
@@ -54,7 +54,7 @@
 <body>
 <header>
   <a class="home" href="/">← 소개</a>
-  <h1>영수증 정리</h1>
+  <h1>식담온 영수증 정리</h1>
   <p>영수증 사진을 올리면 반듯하게 펴서, 내용을 읽고, 식자재 지출현황 엑셀로 만들어 드립니다</p>
 </header>
 <main>
@@ -66,7 +66,7 @@
   <div id="files"></div>
   <div class="row"><button id="go" disabled>정리 시작</button><span id="err" style="color:#b91c1c"></span></div>
   <p class="note">파일 이름은 자동으로 단순하게 정리됩니다. 예: KakaoTalk_20260813_142355123.jpg → 26.08.13 (같은 날 사진이 여러 장이면 26.08.13_2, 26.08.13_3 ...), 8.21 충북농산 → 26.08.21 충북농산. 날짜로 읽히지 않는 이름은 그대로 둡니다.</p>
-  <p class="note">시험 서버는 재시작·재배포 시 작업 파일이 지워질 수 있으므로 결과는 바로 다운로드해 주세요. 남아 있는 영수증은 정리가 끝난 뒤 7일이 지나면 자동으로 지워지고, 결과 화면의 '지금 삭제' 버튼으로 바로 지울 수도 있습니다.
+  <p class="note">시험 서버는 재시작·재배포 시 작업 파일이 지워질 수 있으므로 결과는 바로 다운로드해 주세요. 남아 있는 영수증은 정리가 끝난 뒤 7일이 지나면 자동으로 지워지고(아래 '월 누적'에 담은 회차는 45일),  결과 화면의 '지금 삭제' 버튼으로 바로 지울 수도 있습니다.
      읽은 금액은 AI가 판독한 값이므로 엑셀로 쓰기 전에 <b>'확인 필요'로 표시된 영수증</b>을 꼭 한 번 확인해 주세요.</p>
 </section>
 
@@ -97,9 +97,21 @@
     <button class="sub" id="dlCsv">영수증 요약(csv)</button>
     <button class="danger" id="del">지금 삭제</button>
   </div>
+  <div class="row"><button class="sub" id="again">다음 회차 올리기 (이 결과는 월 누적에 담겨 있습니다)</button></div>
   <div style="overflow:auto;margin-top:16px">
     <table><thead><tr><th>파일</th><th>상호</th><th>날짜</th><th class="num">총액</th><th class="num">품목</th><th>확인</th><th></th></tr></thead>
     <tbody id="rows"></tbody></table>
+  </div>
+</section>
+
+<section class="card hide" id="acc">
+  <h3 style="margin-top:0">월 누적 <select id="accMonth" style="font-size:15px;padding:4px"></select></h3>
+  <p class="note">한 달에 여러 번 올린 영수증이 회차별로 쌓입니다. 회차마다 지출현황 엑셀을 받을 수 있고, 아래에서 이 달 전체를 한 파일로 합쳐 받을 수도 있습니다. 같은 날 사진은 26.08.13, 26.08.13_2 처럼 번호가 이어집니다.</p>
+  <div id="accList" class="note"></div>
+  <div class="row">
+    <button id="accLedger">누적 지출현황 엑셀 받기</button>
+    <button class="sub" id="accImages">누적 정리된 사진 받기(zip)</button>
+    <span id="accMsg" class="note"></span>
   </div>
 </section>
 
@@ -381,7 +393,7 @@ function rowHtml(x, i){
     <td><input id="e_d" type="date" value="${attr(x.date)}"></td>
     <td class="num"><input id="e_t" type="number" min="0" step="1" value="${x.total ?? ''}" style="width:120px"></td>
     <td class="num">${x.items}</td>
-    <td><label style="font-size:13px"><input type="checkbox" id="e_x" ${x.excluded ? 'checked' : ''}> 장부에서 제외</label></td>
+    <td><label style="font-size:13px;color:#b91c1c"><input type="checkbox" id="e_x"> 영수증이 아니면 체크<br>(완전히 삭제)</label></td>
     <td class="act"><button class="mini" onclick="saveRow(${i})">저장</button> <button class="mini sub" onclick="cancelEdit()">취소</button></td></tr>`;
   const status = x.excluded ? '<span class="tag gray">장부 제외</span>'
     : x.needs_check ? `<span class="tag">확인 필요</span> <small>${esc(x.note)}</small>`
@@ -392,7 +404,8 @@ function rowHtml(x, i){
     <td class="num">${won(x.total)}</td><td class="num">${x.items}</td><td>${status}</td>
     <td class="act"><a href="${imgUrl(x)}" target="_blank">사진 보기</a>
       ${x.needs_check ? `<button class="mini" onclick="okRow(${i})">맞음</button>` : ''}
-      <button class="mini sub" onclick="startEdit(${i})">수정</button></td></tr>`;
+      <button class="mini sub" onclick="startEdit(${i})">수정</button>
+      ${x.excluded ? `<button class="mini danger" onclick="deleteRow(${i})">삭제</button>` : ''}</td></tr>`;
 }
 
 function render(){
@@ -432,6 +445,7 @@ async function showResult(token){
   $('#step2').classList.add('hide'); $('#step3').classList.remove('hide');
   ROWS = d.rows; DIRTY = !!d.ledger_dirty; EDIT = null; render();
   showProblems($('#problems3'), d.problems);
+  accAdd(token.job, ROWS);
 }
 
 function startEdit(i){ EDIT = i; render(); }
@@ -448,15 +462,27 @@ async function patchRow(i, body, doneMsg){
   return true;
 }
 
+// 영수증이 아닌 사진: 결과·엑셀·정리된 사진 묶음에서 완전히 지운다 (되돌릴 수 없음)
+async function deleteRow(i){
+  const x = ROWS[i];
+  if (!confirm(`'${x.file}' 을(를) 완전히 삭제합니다.\n엑셀과 정리된 사진 묶음에서도 빠지며 되돌릴 수 없습니다. 삭제할까요?`)) return;
+  const r = await fetch(`/api/jobs/${jobId}/receipts/${encodeURIComponent(x.key)}`, {method:'DELETE'});
+  if (!r.ok) { const j = await r.json().catch(() => ({})); alert(j.detail || '삭제하지 못했습니다. 잠시 뒤 다시 시도해 주세요.'); return; }
+  const rr = await fetch('/api/jobs/' + jobId + '/receipts');
+  const d = await rr.json().catch(() => null);
+  if (d && Array.isArray(d.rows)) { ROWS = d.rows; DIRTY = true; EDIT = null; render(); accRender(); }
+  $('#toast').textContent = '삭제했습니다.';
+}
+
 async function okRow(i){ await patchRow(i, {confirm: true}, '확인했습니다. 엑셀은 받을 때 반영됩니다.'); }
 
 async function saveRow(i){
   const x = ROWS[i], body = {};
-  const v = $('#e_v').value.trim(), d = $('#e_d').value, t = $('#e_t').value, ex = $('#e_x').checked;
+  if ($('#e_x').checked) { await deleteRow(i); return; }
+  const v = $('#e_v').value.trim(), d = $('#e_d').value, t = $('#e_t').value;
   if (v && v !== (x.vendor || '')) body.vendor = v;
   if (d && d !== (x.date || '')) body.date = d;
   if (t !== '' && Number(t) !== x.total) body.total = Math.round(Number(t));
-  if (ex !== x.excluded) body.exclude = ex;
   if (!Object.keys(body).length) { EDIT = null; render(); return; }
   await patchRow(i, body, '저장했습니다. 엑셀은 받을 때 고친 값으로 만들어집니다.');
 }
@@ -472,6 +498,73 @@ $('#del').onclick = async () => {
   if (!confirm('올린 영수증과 결과를 서버에서 지웁니다. 지운 뒤에는 다시 받을 수 없습니다. 지울까요?')) return;
   await fetch('/api/jobs/' + jobId, {method:'DELETE'}); localStorage.removeItem('lastJob'); location.reload();
 };
+
+// ---- 월 누적 (담아 둔 회차는 이 브라우저가 기억하고, 합치기는 서버가 한다) ----
+const ACC_KEY = 'accJobs';
+let ACC_MONTH = null;
+const accLoad = () => { try { return JSON.parse(localStorage.getItem(ACC_KEY) || '[]'); } catch (e) { return []; } };
+const accSave = l => localStorage.setItem(ACC_KEY, JSON.stringify(l));
+function monthOfRows(rows){
+  const c = {};
+  (rows || []).forEach(r => { const m = (r.date || '').slice(0, 7); if (/^\d{4}-\d{2}$/.test(m)) c[m] = (c[m] || 0) + 1; });
+  const best = Object.keys(c).sort((a, b) => c[b] - c[a])[0];
+  return best || new Date().toISOString().slice(0, 7);
+}
+function accAdd(job, rows){
+  const l = accLoad();
+  if (!l.find(x => x.job === job)) { l.push({job, month: monthOfRows(rows), at: Date.now()}); accSave(l); ACC_MONTH = monthOfRows(rows); }
+  accRender();
+}
+function accRemove(job){ accSave(accLoad().filter(x => x.job !== job)); accRender(); }
+function accOpen(job){
+  jobId = job; localStorage.setItem('lastJob', job);
+  startWatching(); window.scrollTo(0, 0);
+}
+async function accRender(){
+  const l = accLoad(), card = $('#acc');
+  if (!l.length) { card.classList.add('hide'); return; }
+  const months = [...new Set(l.map(x => x.month))].sort().reverse();
+  if (!ACC_MONTH || !months.includes(ACC_MONTH)) ACC_MONTH = months[0];
+  $('#accMonth').innerHTML = months.map(m => `<option value="${m}" ${m === ACC_MONTH ? 'selected' : ''}>${m}</option>`).join('');
+  card.classList.remove('hide');
+  const items = l.filter(x => x.month === ACC_MONTH);
+  let info = {};
+  try {
+    const r = await fetch('/api/accumulate/sync', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({job_ids: items.map(x => x.job)})});
+    if (r.ok) (await r.json()).jobs.forEach(j => info[j.job_id] = j);
+  } catch (e) {}
+  let sum = 0, cnt = 0;
+  $('#accList').innerHTML = items.map((x, n) => {
+    const j = info[x.job];
+    if (j && j.exists === false) return `<div>${n + 1}회차 · 서버에서 사라진 작업입니다 <button class="mini sub" onclick="accRemove('${x.job}')">목록에서 지우기</button></div>`;
+    if (j) { sum += j.total || 0; cnt += j.receipts || 0; }
+    const when = j && j.created ? j.created.slice(5, 10).replace('-', '/') : '';
+    return `<div style="padding:6px 0;border-bottom:1px solid #eef2f7">${n + 1}회차 · ${when} · ` + (j ? `영수증 ${j.receipts}장 · ${won(j.total)}` + (j.need_count ? ` · <b style="color:#b45309">확인 필요 ${j.need_count}장</b>` : '') : '확인 중…')
+      + ` <button class="mini sub" onclick="accOpen('${x.job}')">열기·수정</button>`
+      + ` <button class="mini sub" onclick="accDownloadOne('${x.job}')">이 회차 엑셀</button>`
+      + ` <button class="mini sub" onclick="accRemove('${x.job}')">누적에서 빼기</button></div>`;
+  }).join('') + `<div style="padding-top:8px"><b>${ACC_MONTH} 누적: 영수증 ${cnt}장 · ${won(sum)}</b></div>`;
+}
+function accDownloadOne(job){ location.href = `/api/jobs/${job}/download/ledger`; }
+async function accDownload(kind){
+  const ids = accLoad().filter(x => x.month === ACC_MONTH).map(x => x.job);
+  const btn = $(kind === 'ledger' ? '#accLedger' : '#accImages'), old = btn.textContent;
+  btn.disabled = true; btn.textContent = '합치는 중… (잠시만요)'; $('#accMsg').textContent = '';
+  try {
+    const r = await fetch('/api/accumulate/' + kind, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({job_ids: ids, month: ACC_MONTH})});
+    if (!r.ok) { const j = await r.json().catch(() => ({})); $('#accMsg').textContent = j.detail || '합치지 못했습니다. 잠시 뒤 다시 시도해 주세요.'; return; }
+    const b = await r.blob(), a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = kind === 'ledger' ? `식자재_지출현황_누적_${ACC_MONTH}.xlsx` : `정리된_영수증_누적_${ACC_MONTH}.zip`;
+    document.body.appendChild(a); a.click(); a.remove();
+  } catch (e) { $('#accMsg').textContent = '연결에 실패했습니다. 잠시 뒤 다시 시도해 주세요.'; }
+  finally { btn.disabled = false; btn.textContent = old; }
+}
+$('#accMonth').onchange = e => { ACC_MONTH = e.target.value; accRender(); };
+$('#accLedger').onclick = () => accDownload('ledger');
+$('#accImages').onclick = () => accDownload('images');
+$('#again').onclick = () => { $('#newUpload').click(); };
+accRender();
 
 $('#retryPoll').onclick = () => { if (jobId) poll(); };
 $('#relogin').onclick = () => { location.href = '/app'; };

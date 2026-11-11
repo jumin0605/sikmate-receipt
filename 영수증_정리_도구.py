@@ -869,6 +869,32 @@ def _kakao_stem(s):
     return f"{yy[2:]}.{mo}.{dd}"
 
 
+# 'Document_261106_173916', 'IMG_20260813_142355', 'Scan 2026-08-13 14.23.55' 처럼
+# 영어·한글 말 뒤에 날짜(와 시각)만 붙은 이름. 날짜 뒤가 숫자·구분자·(1)·_정리 뿿이면 날짜만 남긴다.
+_PREFIXED_DATE_RE = re.compile(
+    r"^[A-Za-z가-힣]+(?:[\s_\-]+[A-Za-z가-힣]+)*[\s_\-]*"
+    r"(?:(?P<y4>\d{4})[-.]?(?P<m4>\d{2})[-.]?(?P<d4>\d{2})|(?P<y2>\d{2})(?P<m2>\d{2})(?P<d2>\d{2})(?!\d))"
+    r"(?P<rest>.*)$")
+_JUNK_REST_RE = re.compile(r"^[\s_\-.:\d()]*(?:[\s_\-]*정리)?$")
+
+
+def _prefixed_date_stem(s):
+    m = _PREFIXED_DATE_RE.match(s)
+    if not m or not _JUNK_REST_RE.match(m.group("rest")):
+        return None
+    cands = []
+    if m.group("y4"):
+        cands.append((m.group("y4"), m.group("m4"), m.group("d4")))
+    # 8자리로 읽히지 않으면 앞 6자리(YYMMDD)로 다시 읽는다
+    mm = re.match(r"^[A-Za-z가-힣]+(?:[\s_\-]+[A-Za-z가-힣]+)*[\s_\-]*(\d{2})(\d{2})(\d{2})", s)
+    if mm:
+        cands.append(("20" + mm.group(1), mm.group(2), mm.group(3)))
+    for y, mo, d in cands:
+        if 2000 <= int(y) <= 2099 and 1 <= int(mo) <= 12 and 1 <= int(d) <= 31:
+            return f"{y[2:]}.{mo}.{d}"
+    return None
+
+
 def normalize_stem(stem, default_year=None):
     """파일 이름의 날짜 부분을 'YY.MM.DD' 로 통일한다.
 
@@ -882,7 +908,7 @@ def normalize_stem(stem, default_year=None):
     s = stem.strip()
 
     # 카카오톡으로 받은 사진: 날짜와 시각만 남기고 군더더기를 뗀다
-    kakao = _kakao_stem(s)
+    kakao = _kakao_stem(s) or _prefixed_date_stem(s)
     if kakao:
         return kakao
 
@@ -1394,6 +1420,8 @@ def source_size(src: Source) -> tuple[float, float]:
 def title_of(src: Source, keep_ext: bool) -> str:
     """사진 위에 적을 이름. 여러 쪽짜리 PDF는 몇 쪽인지도 같이 적는다."""
     base = src.path.name if keep_ext else src.path.stem
+    if not keep_ext and base.endswith("_정리") and len(base) > len("_정리"):
+        base = base[: -len("_정리")]       # 정리본 꼬리표는 엑셀에 보일 필요가 없다
     if src.page is None or src.pages <= 1:
         return base
     return f"{base} ({src.page + 1}/{src.pages})"

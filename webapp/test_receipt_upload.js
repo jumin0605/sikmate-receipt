@@ -169,7 +169,7 @@ function createDom() {
       input.checked = /(?:^|\s)checked(?:\s|=|>|$)/.test(match[1]) || /\bchecked\b/.test(match[1]);
     }
   }
-  ['drop', 'pick', 'files', 'go', 'err', 'step1', 'step2', 'step3', 'phase', 'pbar', 'pct', 'log', 'summary', 'toast', 'rows', 'dlLedger', 'dlImages', 'dlCsv', 'del', 'recover', 'recoverMsg', 'retryPoll', 'newUpload', 'relogin']
+  ['drop', 'pick', 'files', 'go', 'err', 'step1', 'step2', 'step3', 'phase', 'pbar', 'pct', 'log', 'summary', 'toast', 'rows', 'dlLedger', 'dlImages', 'dlCsv', 'del', 'recover', 'recoverMsg', 'retryPoll', 'newUpload', 'relogin', 'acc', 'accMonth', 'accList', 'accLedger', 'accImages', 'accMsg', 'again']
     .forEach(makeEl);
   elements.step2.classList.add('hide');
   elements.step3.classList.add('hide');

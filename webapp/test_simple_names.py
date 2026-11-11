@@ -16,7 +16,8 @@ def extract(path, names):
     return body
 
 
-CORE_NAMES = ("_KAKAO_PREFIX", "_KAKAO_RE", "_kakao_stem", "normalize_stem", "guess_year")
+CORE_NAMES = ("_KAKAO_PREFIX", "_KAKAO_RE", "_kakao_stem", "_PREFIXED_DATE_RE", "_JUNK_REST_RE",
+              "_prefixed_date_stem", "normalize_stem", "guess_year")
 ns = {"re": re, "os": os}
 exec(compile(ast.Module(body=extract(HERE.parent / "영수증_정리_도구.py", CORE_NAMES), type_ignores=[]),
              "core", "exec"), ns)
@@ -27,8 +28,10 @@ class Core:
     guess_year = staticmethod(ns["guess_year"])
 
 
-ans = {"re": re, "core": Core, "Path": Path}
-exec(compile(ast.Module(body=extract(HERE / "app.py", ("_decode_filename", "_guess_year_hint", "simple_upload_stem")),
+import json, shutil, tempfile
+ans = {"re": re, "core": Core, "Path": Path, "json": json, "shutil": shutil}
+exec(compile(ast.Module(body=extract(HERE / "app.py", ("_decode_filename", "_guess_year_hint", "simple_upload_stem", "simplify_cleaned_names",
+                                                "_unique_stem", "merge_jobs")),
                         type_ignores=[]), "app", "exec"), ans)
 simple = ans["simple_upload_stem"]
 
@@ -60,8 +63,56 @@ class SimpleNames(unittest.TestCase):
             out.append(final)
         self.assertEqual(out, ["26.08.13", "26.08.13_2", "26.08.13_3"])
 
+    def test_document_scan_names(self):
+        # 스크린샷의 이름들: Document_YYMMDD_HHMMSS
+        for s, want in {"Document_261103_171938": "26.11.03", "Document_261106_173827": "26.11.06",
+                        "Document_261110_145501_정리": "26.11.10", "IMG_20260813_142355": "26.08.13",
+                        "Scan 2026-08-13 14.23.55": "26.08.13"}.items():
+            self.assertEqual(simple(s), want, s)
+
+    def test_text_after_date_is_kept(self):
+        self.assertEqual(simple("Document_261106 합계"), "Document_261106 합계")
+        self.assertEqual(simple("IMG_1234"), "IMG_1234")
+
+    def test_cleaned_names_lose_suffix(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            made = []
+            for n in ("26.11.06_정리.jpg", "26.11.06_2_정리.jpg", "충북농산_정리_p1.jpg"):
+                (td / n).write_bytes(b"x"); made.append(td / n)
+            out = ans["simplify_cleaned_names"](made)
+            self.assertEqual([p.name for p in out], ["26.11.06.jpg", "26.11.06_2.jpg", "충북농산_p1.jpg"])
+            self.assertTrue(all(p.exists() for p in out))
+
+    def test_unique_stem_for_merge(self):
+        u = ans["_unique_stem"]
+        used = {"26.11.06", "26.11.06_2"}
+        self.assertEqual(u("26.11.06", used), "26.11.06_3")
+        self.assertEqual(u("26.11.07", used), "26.11.07")
+        self.assertEqual(u("26.11.06_2", used), "26.11.06_3")
+
+    def test_merge_jobs_numbers_across_runs(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            ans["JOBS_DIR"] = td / "jobs"
+            ids = ["a" * 16, "b" * 16]
+            for jid in ids:
+                (td / "jobs" / jid / "json").mkdir(parents=True)
+                (td / "jobs" / jid / "정리결과").mkdir(parents=True)
+                (td / "jobs" / jid / "json" / "26.11.06.json").write_text(
+                    json.dumps({"_원본": "x/26.11.06.jpg", "상호": jid[:1]}), encoding="utf-8")
+                (td / "jobs" / jid / "정리결과" / "26.11.06.jpg").write_bytes(jid[:1].encode())
+            dest = td / "m"
+            n = ans["merge_jobs"](ids, dest)
+            self.assertEqual(n, 2)
+            self.assertEqual(sorted(p.name for p in (dest / "json").glob("*.json")), ["26.11.06.json", "26.11.06_2.json"])
+            self.assertEqual((dest / "정리결과" / "26.11.06_2.jpg").read_bytes(), b"b")
+            d2 = json.loads((dest / "json" / "26.11.06_2.json").read_text(encoding="utf-8"))
+            self.assertTrue(d2["_원본"].endswith("26.11.06_2.jpg"))
+            self.assertEqual(d2["상호"], "b")
+
     def test_not_kakao_or_invalid_left_alone(self):
-        for s in ("영수증 사진", "IMG_1234", "KakaoTalk_20261399_142355123", "KakaoTalk_20260813_256100"):
+        for s in ("영수증 사진", "IMG_1234", "KakaoTalk_20261399_142355123"):
             self.assertEqual(simple(s), s)
 
     def test_date_names_still_work(self):

@@ -31,6 +31,7 @@ import threading
 import time
 import csv
 import io
+import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,7 @@ from pathlib import Path
 from fastapi import Cookie, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from env_config import load_project_env
@@ -47,6 +49,8 @@ HERE = Path(__file__).resolve().parent
 load_project_env(HERE.parent)
 DATA_DIR = Path(os.environ.get("DATA_DIR", HERE / "data")).resolve()
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "7"))
+# 월 누적에 담아 둔 작업은 한 달치를 모을 수 있게 더 오래 보관한다.
+ACCUM_RETENTION_DAYS = int(os.environ.get("ACCUM_RETENTION_DAYS", "45"))
 MAX_FILES = int(os.environ.get("MAX_FILES", "40"))
 MAX_FILE_MB = int(os.environ.get("MAX_FILE_MB", "25"))
 DAILY_FILE_LIMIT = int(os.environ.get("DAILY_FILE_LIMIT", "400"))
@@ -266,6 +270,22 @@ def problem_lines(st: dict) -> list[str]:
         out.append(f"{f.get('name')} ({f.get('reason')})")
     return out
 
+def simplify_cleaned_names(paths) -> list:
+    """정리된 사진 이름 끝의 '_정리' 를 뗀다. (26.11.06_정리.jpg -> 26.11.06.jpg)
+    떼면 이미 있는 이름과 겹칠 때만 그대로 둔다."""
+    out = []
+    for p in paths:
+        p = Path(p)
+        new = p.with_name(re.sub(r"_정리(?=(?:_\d+)?(?:_p\d+)?$)", "", p.stem, count=1) + p.suffix)
+        if new != p and not new.exists():
+            try:
+                p.rename(new)
+                p = new
+            except OSError:
+                pass
+        out.append(p)
+    return out
+
 def run_job(job_id: str):
     jd = JOBS_DIR / job_id
     src, cleaned, jdir = jd / "원본", jd / "정리결과", jd / "json"
@@ -303,6 +323,7 @@ def run_job(job_id: str):
                            perspective=False, log=log)
         if not written:
             raise RuntimeError("정리된 영수증이 없습니다. 사진이 올바른지 확인해 주세요.")
+        written = simplify_cleaned_names(written)
 
         state["phase"] = "판독"
         write_status(job_id, phase="영수증 내용 읽는 중", progress=25)
@@ -381,10 +402,21 @@ _resume_jobs_on_startup()
 # 보관 기간이 지난 작업 삭제 / 하루 사용량 집계
 # ---------------------------------------------------------------------------
 def purge_old():
-    cutoff = time.time() - RETENTION_DAYS * 86400
+    now = time.time()
     for p in JOBS_DIR.iterdir():
         try:
-            if p.is_dir() and p.stat().st_mtime < cutoff:
+            if not p.is_dir():
+                continue
+            days = RETENTION_DAYS
+            sp = p / "status.json"
+            if sp.exists():
+                try:
+                    if json.loads(sp.read_text(encoding="utf-8")).get("keep"):
+                        days = max(days, ACCUM_RETENTION_DAYS)
+                except Exception:  # noqa: BLE001
+                    pass
+            newest = max(p.stat().st_mtime, sp.stat().st_mtime if sp.exists() else 0)
+            if newest < now - days * 86400:
                 shutil.rmtree(p, ignore_errors=True)
         except OSError:
             pass
@@ -418,11 +450,11 @@ threading.Thread(target=_purge_loop, daemon=True).start()
 # 화면 / API
 # ---------------------------------------------------------------------------
 LOGIN_HTML = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>접속 코드 | 식메이트 영수증 정리</title><style>body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f0fdfa}
+<title>접속 코드 | 식담온 영수증 정리</title><style>body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f0fdfa}
 form{background:#fff;padding:32px;border-radius:16px;box-shadow:0 6px 24px #0f172a14;width:min(340px,92vw);box-sizing:border-box}
 h3{margin:0 0 6px;color:#115e59}
 input,button{width:100%;padding:13px;font-size:16px;margin-top:12px;box-sizing:border-box}input{border:1px solid #cbd5e1;border-radius:10px}button{background:#0f766e;color:#fff;border:0;border-radius:10px;font-weight:700;cursor:pointer}
-button:hover{background:#115e59}p{color:#b91c1c;margin:10px 0 0}a{display:block;text-align:center;margin-top:16px;color:#64748b;font-size:14px;text-decoration:none}</style><form method=post action=/login><h3>식메이트 영수증 정리</h3>
+button:hover{background:#115e59}p{color:#b91c1c;margin:10px 0 0}a{display:block;text-align:center;margin-top:16px;color:#64748b;font-size:14px;text-decoration:none}</style><form method=post action=/login><h3>식담온 영수증 정리</h3>
 <div>안내받은 접속 코드를 입력해 주세요.</div><input type=password name=code autofocus>
 <button>들어가기</button>{msg}<a href="/">← 소개 페이지로</a></form>"""
 
@@ -650,6 +682,61 @@ def fix_receipt(job_id: str, key: str, fix: ReceiptFix, rc_auth: str | None = Co
     return {"row": row}
 
 
+def _receipt_json_path(jd: Path, key: str):
+    m = re.fullmatch(r"(.+)#(\d+)", key)
+    if not m:
+        raise HTTPException(400, "잘못된 영수증 번호입니다.")
+    jpath = (jd / "json" / f"{m.group(1)}.json").resolve()
+    if jpath.parent != (jd / "json").resolve() or not jpath.exists():
+        raise HTTPException(404, "없는 영수증입니다.")
+    return jpath, int(m.group(2))
+
+
+def _write_images_zip(jd: Path):
+    cleaned = jd / "정리결과"
+    with zipfile.ZipFile(jd / "정리된_영수증.zip", "w", zipfile.ZIP_DEFLATED) as z:
+        for p in sorted(cleaned.glob("*")):
+            z.write(p, p.name)
+
+
+@app.delete("/api/jobs/{job_id}/receipts/{key}")
+def delete_receipt(job_id: str, key: str, rc_auth: str | None = Cookie(default=None)):
+    """영수증이 아니거나 필요 없는 사진을 결과에서 완전히 지운다. (엑셀·사진 묶음에서도 빠진다)"""
+    _check_auth(rc_auth)
+    jd = job_dir(job_id)
+    jpath, idx = _receipt_json_path(jd, key)
+    lock = _rebuild_locks.setdefault(job_id, threading.Lock())
+    with lock:
+        d = json.loads(jpath.read_text(encoding="utf-8"))
+        kids = d.get("영수증") if isinstance(d.get("영수증"), list) else None
+        if kids and len(kids) > 1:
+            # 사진 한 장에 영수증이 여러 장이면 그 영수증만 뺀다
+            if not 1 <= idx <= len(kids):
+                raise HTTPException(404, "없는 영수증입니다.")
+            del kids[idx - 1]
+            jpath.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            stem = jpath.stem
+            jpath.unlink()
+            for p in (jd / "정리결과").glob("*"):
+                if p.stem == stem:
+                    p.unlink(missing_ok=True)
+            # 원본 사진도 지운다 (같은 원본에서 나온 다른 쪽이 남아 있으면 둔다)
+            base = re.sub(r"_p\d+$", "", stem)
+            still = any(p.stem == base or re.fullmatch(re.escape(base) + r"_p\d+", p.stem)
+                        for p in (jd / "json").glob("*.json"))
+            if not still:
+                for p in (jd / "원본").glob("*"):
+                    if p.stem == base:
+                        p.unlink(missing_ok=True)
+        # 묶음 파일에는 지운 영수증이 남아 있으므로 같이 지운다
+        for extra in ("_모두.json", "_요약.csv"):
+            (jd / "json" / extra).unlink(missing_ok=True)
+        _write_images_zip(jd)
+    write_status(job_id, ledger_dirty=True)
+    return {"deleted": True}
+
+
 @app.get("/api/jobs/{job_id}/image/{name}")
 def receipt_image(job_id: str, name: str, rc_auth: str | None = Cookie(default=None)):
     """수정할 때 원본과 비교할 수 있게 정리된 영수증 사진을 보여 준다."""
@@ -659,6 +746,145 @@ def receipt_image(job_id: str, name: str, rc_auth: str | None = Cookie(default=N
     if path.parent != folder or not path.is_file():
         raise HTTPException(404, "사진이 없습니다.")
     return FileResponse(path)
+
+
+# ---------------------------------------------------------------------------
+# 월 누적: 여러 번 올린 작업(회차)을 한 장부로 합친다.
+# 어떤 작업을 담았는지는 사용자 브라우저가 기억하고, 서버는 받은 작업 번호만 합친다.
+# ---------------------------------------------------------------------------
+_accum_lock = threading.Lock()
+MAX_ACCUM_JOBS = 40
+
+
+class AccumReq(BaseModel):
+    job_ids: list[str]
+    month: str | None = None
+
+
+def _valid_job_ids(ids: list[str]) -> list[str]:
+    out = []
+    for jid in ids[:MAX_ACCUM_JOBS]:
+        if isinstance(jid, str) and re.fullmatch(r"[0-9a-f]{16}", jid) and (JOBS_DIR / jid).is_dir() and jid not in out:
+            out.append(jid)
+    return out
+
+
+def _unique_stem(stem: str, used: set) -> str:
+    """여러 회차를 합칠 때 같은 이름이 겹치면 26.08.13 -> 26.08.13_2 처럼 번호를 붙인다."""
+    if stem.lower() not in used:
+        return stem
+    m = re.match(r"^(?P<head>.+?)(?P<tail>_정리.*)?$", stem)
+    head, tail = m.group("head"), m.group("tail") or ""
+    head = re.sub(r"_\d+$", "", head)
+    n = 2
+    while f"{head}_{n}{tail}".lower() in used:
+        n += 1
+    return f"{head}_{n}{tail}"
+
+
+def merge_jobs(job_ids: list[str], dest: Path) -> int:
+    """여러 작업의 판독 결과(json)와 정리된 사진을 한 폴더로 모은다. 모은 영수증 수를 돌려준다."""
+    jdir, pdir = dest / "json", dest / "정리결과"
+    jdir.mkdir(parents=True)
+    pdir.mkdir(parents=True)
+    used, count = set(), 0
+    for jid in job_ids:
+        jd = JOBS_DIR / jid
+        imgs: dict[str, list[Path]] = {}
+        for p in (jd / "정리결과").glob("*"):
+            imgs.setdefault(p.stem, []).append(p)
+        handled = set()
+        for jp in sorted((jd / "json").glob("*.json")):
+            if jp.name.startswith("_"):
+                continue
+            try:
+                d = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                continue
+            new = _unique_stem(jp.stem, used)
+            used.add(new.lower())
+            first_img = None
+            for p in imgs.get(jp.stem, []):
+                shutil.copy2(p, pdir / (new + p.suffix))
+                first_img = first_img or (pdir / (new + p.suffix))
+            handled.add(jp.stem)
+            kids = d.get("영수증") if isinstance(d.get("영수증"), list) else []
+            for obj in [d] + [k for k in kids if isinstance(k, dict)]:
+                if "_원본" in obj and first_img:
+                    obj["_원본"] = str(first_img)
+                if "파일명" in obj:
+                    obj["파일명"] = first_img.name if first_img else new
+            (jdir / f"{new}.json").write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+            count += 1
+        for stem, ps in imgs.items():          # 판독 결과가 없는 사진도 이미지 묶음에는 넣는다
+            if stem in handled:
+                continue
+            new = _unique_stem(stem, used)
+            used.add(new.lower())
+            for p in ps:
+                shutil.copy2(p, pdir / (new + p.suffix))
+    return count
+
+
+@app.post("/api/accumulate/sync")
+def accumulate_sync(req: AccumReq, rc_auth: str | None = Cookie(default=None)):
+    """누적에 담은 회차들의 현재 상태를 알려 주고, 한 달 동안 지워지지 않게 표시한다."""
+    _check_auth(rc_auth)
+    out = []
+    for jid in req.job_ids[:MAX_ACCUM_JOBS]:
+        if not (isinstance(jid, str) and re.fullmatch(r"[0-9a-f]{16}", jid)) or not (JOBS_DIR / jid).is_dir():
+            out.append({"job_id": jid, "exists": False})
+            continue
+        st = read_status(jid)
+        if st.get("state") == "done":
+            write_status(jid, keep=True)
+        rows = _receipt_rows(jid) if st.get("state") == "done" else []
+        live = [r for r in rows if not r["excluded"]]
+        out.append({"job_id": jid, "exists": True, "state": st.get("state"),
+                    "file_count": st.get("file_count", 0), "created": st.get("created"),
+                    "receipts": len(live), "need_count": sum(r["needs_check"] for r in live),
+                    "total": sum(r["total"] for r in live if isinstance(r["total"], (int, float)))})
+    return {"jobs": out}
+
+
+@app.post("/api/accumulate/{kind}")
+def accumulate_download(kind: str, req: AccumReq, rc_auth: str | None = Cookie(default=None)):
+    """담아 둔 회차를 한꺼번에 합쳐 지출현황 엑셀(ledger) 또는 정리된 사진 zip(images)으로 내려 준다."""
+    _check_auth(rc_auth)
+    if kind not in ("ledger", "images"):
+        raise HTTPException(404, "알 수 없는 요청입니다.")
+    ids = [j for j in _valid_job_ids(req.job_ids) if read_status(j).get("state") == "done"]
+    if not ids:
+        raise HTTPException(404, "합칠 수 있는 작업이 없습니다. 서버가 다시 시작되면 이전 작업이 지워질 수 있습니다.")
+    month = req.month if req.month and re.fullmatch(r"\d{4}-\d{2}", req.month) else None
+    suffix = f"_{month}" if month else ""
+    base = DATA_DIR / "acc"
+    base.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(dir=base))
+    try:
+        with _accum_lock:                      # 한 번에 하나만 (메모리 보호)
+            n = merge_jobs(ids, tmp)
+            if kind == "images":
+                out = tmp / "누적_정리된_영수증.zip"
+                with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+                    for p in sorted((tmp / "정리결과").glob("*")):
+                        z.write(p, p.name)
+                nice = f"정리된_영수증_누적{suffix}.zip"
+            else:
+                if not n:
+                    raise HTTPException(400, "장부에 넣을 영수증이 없습니다.")
+                try:
+                    out = Path(core.make_ledger(str(tmp / "json"), out_path=str(tmp / "누적_지출현황.xlsx"),
+                                                photos=str(tmp / "정리결과"), log=lambda m: None))
+                except HTTPException:
+                    raise
+                except BaseException as e:  # noqa: BLE001  (SystemExit 포함)
+                    raise HTTPException(400, f"누적 엑셀을 만들지 못했습니다. ({str(e)[:80]})")
+                nice = f"식자재_지출현황_누적{suffix}.xlsx"
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return FileResponse(out, filename=nice, background=BackgroundTask(shutil.rmtree, tmp, True))
 
 
 @app.get("/api/jobs/{job_id}/download/{kind}")
