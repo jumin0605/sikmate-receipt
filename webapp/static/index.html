@@ -766,21 +766,30 @@ $('#newUpload').onclick = () => {
     if (busy || !list.length) return;
     busy = true; draw();
     const btn = $('#inspAuto'), old = btn.textContent;
-    btn.textContent = `방향 살펴보는 중… (${list.length}장)`;
+    btn.textContent = `방향 살펴보는 중… 0/${list.length}`;
     try {
-      const fd = new FormData();
       const items = list.slice();
-      for (const x of items) {
-        if (!x.small) x.small = await shrink(x.file);
-        const blob = x.small ? await new Promise(r => x.small.toBlob(r, 'image/jpeg', 0.85)) : x.file;
-        fd.append('files', blob, x.file.name);
+      // 8장씩 나눠 보낸다 (한 요청이 너무 길어지지 않게, 진행 상황도 보이게)
+      const CHUNK = 8, rots = new Array(items.length).fill(null);
+      let done = 0, errMsg = '';
+      for (let s = 0; s < items.length; s += CHUNK) {
+        const part = items.slice(s, s + CHUNK), fd = new FormData();
+        for (const x of part) {
+          if (!x.small) x.small = await shrink(x.file);
+          const blob = x.small ? await new Promise(r => x.small.toBlob(r, 'image/jpeg', 0.85)) : x.file;
+          fd.append('files', blob, x.file.name);
+        }
+        const r = await fetch('/api/inspection/orient', {method: 'POST', body: fd});
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !Array.isArray(j.rotations)) { errMsg = j.detail || ''; break; }
+        j.rotations.forEach((v, i) => { rots[s + i] = v; });
+        done += part.length;
+        btn.textContent = `방향 살펴보는 중… ${done}/${items.length}`;
       }
-      const r = await fetch('/api/inspection/orient', {method: 'POST', body: fd});
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || !Array.isArray(j.rotations)) { $('#inspMsg').textContent = j.detail || '방향을 살펴보지 못했습니다. 사진 아래 ↺ ↻ 버튼으로 직접 돌려 주세요.'; return; }
+      if (!done) { $('#inspMsg').textContent = errMsg || '방향을 살펴보지 못했습니다. 사진 아래 ↺ ↻ 버튼으로 직접 돌려 주세요.'; return; }
       let changed = 0, failed = 0;
       items.forEach((x, i) => {
-        const v = j.rotations[i];
+        const v = rots[i];
         if (v === null || v === undefined) { failed += 1; return; }
         x.rot = Number(v) || 0; x.auto = !!x.rot;
         if (x.rot) changed += 1;
