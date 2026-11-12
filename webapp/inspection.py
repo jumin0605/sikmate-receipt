@@ -158,10 +158,13 @@ ORIENT_PROMPT = (
     "이 그림에는 같은 사진(식자재 포장지나 원산지 표시)을 네 방향으로 돌린 것이 A, B, C, D 칸에 있습니다. "
     "포장지의 글자(한글, 숫자)와 물건이 사람이 평소에 보는 방향으로 똑바로 서 있는 칸을 하나 고르세요. "
     "글자가 있으면 글자가 바로 읽히는 칸을 가장 우선으로 고르세요. 글자가 위아래로 뒤집혀 있거나 옆으로 "
-    "누워 있으면 안 됩니다. 칸 모서리의 빨간 A, B, C, D 표시는 판단에 쓰지 마세요."
+    "누워 있으면 안 됩니다. 글자가 없으면 탁자·바닥·상자가 아래에 있고 물건이 놓인 방향을 보세요. "
+    "칸 모서리의 빨간 A, B, C, D 표시는 판단에 쓰지 마세요.\n"
+    "글자도 없고 위아래를 알 수 없는 사진(예: 위에서 내려다본 과자·마카롱)이면 sure 를 false 로 하세요."
 )
-ORIENT_SCHEMA = {"type": "object", "required": ["upright"],
-                 "properties": {"upright": {"type": "string", "enum": list(ORIENT_LETTERS)}}}
+ORIENT_SCHEMA = {"type": "object", "required": ["upright", "sure"],
+                 "properties": {"upright": {"type": "string", "enum": list(ORIENT_LETTERS)},
+                                "sure": {"type": "boolean"}}}
 
 
 def _label_font(size):
@@ -237,5 +240,7 @@ def detect_rotation(core, client, model, data: bytes) -> int:
             ans = core.json_ask(client, png, model, schema=ORIENT_SCHEMA, prompt=ORIENT_PROMPT)
     else:                                     # 시험용 가짜 core
         ans = core.json_ask(client, png, model, schema=ORIENT_SCHEMA, prompt=ORIENT_PROMPT)
+    if (ans or {}).get("sure") is False:      # 확신이 없으면 돌리지 않는다 (멀쩡한 사진을 돌려 망치지 않게)
+        return 0
     letter = str((ans or {}).get("upright", "A")).strip().upper()[:1]
     return ROTATIONS[ORIENT_LETTERS.index(letter)] if letter in ORIENT_LETTERS else 0
