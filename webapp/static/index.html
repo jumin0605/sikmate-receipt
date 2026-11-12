@@ -58,6 +58,9 @@
   #inspThumbs figure{margin:0;border:1px solid #e5e7eb;border-radius:8px;padding:6px;text-align:center;font-size:12px;position:relative;background:#fff}
   #inspThumbs img{width:100%;height:80px;object-fit:contain;display:block;margin-bottom:4px}
   #inspThumbs figcaption{word-break:break-all}
+  #inspThumbs .rot{display:flex;gap:4px;justify-content:center;margin-top:4px}
+  #inspThumbs .rot button{padding:2px 10px;font-size:15px;line-height:1.2}
+  #inspThumbs .autotag{display:inline-block;margin-top:3px;background:#dbeafe;color:#1d4ed8;border-radius:8px;padding:0 6px;font-size:11px}
   #inspThumbs .x{position:absolute;top:2px;right:2px;background:#fff;color:#b91c1c;border:1px solid #fca5a5;border-radius:50%;width:22px;height:22px;padding:0;font-size:13px;line-height:20px}
   header .nav{margin-top:10px;font-size:14px}
   header .nav a{color:#ccfbf1;margin:0 8px}
@@ -155,12 +158,14 @@
     <span class="note">제목에 '2026년 11월 12일'처럼 들어가고, 파일 이름은 '원산지 표시_26.11.12.xlsx'가 됩니다.</span>
   </div>
   <div class="row">
+    <button class="sub" id="inspAuto" disabled title="누웠거나 뒤집힌 사진을 AI가 찾아 똑바로 돌립니다">방향 자동 맞추기</button>
     <button id="inspGo" disabled>검수서 엑셀 받기</button>
     <button class="sub" id="inspGoWord" disabled>워드로 받기</button>
-    <button class="sub" id="inspClear" disabled>사진 모두 빼기</button>
+    <button class="sub" id="inspClear" disabled>목록 비우기</button>
     <span id="inspMsg" class="note"></span>
   </div>
   <div id="inspProblems" class="problems hide"></div>
+  <p class="note">카카오톡으로 받은 사진은 방향 정보가 빠져 있어 옆으로 눕거나 뒤집혀 보일 수 있습니다. <b>방향 자동 맞추기</b>를 누르면 AI가 사진을 보고 똑바로 돌려 주고, 사진 아래 <b>↺ ↻</b> 버튼으로 한 장씩 직접 돌릴 수도 있습니다. 미리보기에 보이는 방향 그대로 엑셀에 들어갑니다.</p>
   <p class="note">검수서 사진은 엑셀을 만든 즉시 서버에서 지워지며 따로 보관하지 않습니다.</p>
 </section>
 
@@ -651,35 +656,74 @@ $('#newUpload').onclick = () => {
 // 영수증 정리와는 따로 사진 목록을 가진다. 원산지 표시 사진은 영수증이 아니라 판독하지 않는다.
 (function inspection(){
   // 화면에 검수서 칸이 없으면(옛 화면·시험용 가짜 화면) 아무것도 하지 않는다
-  const need = ['#insp', '#inspPick', '#inspDrop', '#inspThumbs', '#inspDate', '#inspGo', '#inspGoWord', '#inspClear', '#inspMsg', '#inspProblems'];
+  const need = ['#insp', '#inspPick', '#inspDrop', '#inspThumbs', '#inspDate', '#inspGo', '#inspGoWord', '#inspClear', '#inspAuto', '#inspMsg', '#inspProblems'];
   if (need.some(s => !$(s))) return;
   const INSP_EXT = ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'];
-  const MAX_N = 60, MAX_MB = 10;
-  let list = [];   // {file, url}
+  const MAX_N = 60, MAX_MB = 10, PREVIEW = 480;
+  // {file, rot(시계 방향 도), small(줄인 캔버스, 없으면 null), url(미리보기)}
+  let list = [];
+  let busy = false;
   const today = new Date();
   const pad = n => String(n).padStart(2, '0');
   $('#inspDate').value = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
   const extOf = n => { const i = n.lastIndexOf('.'); return i < 0 ? '' : n.slice(i).toLowerCase(); };
   const stemOf = n => { const i = n.lastIndexOf('.'); return i < 0 ? n : n.slice(0, i); };
   const natural = (a, b) => a.localeCompare(b, 'ko', {numeric: true, sensitivity: 'base'});
+
+  // 사진을 긴 변 PREVIEW px 로 줄인 캔버스. 브라우저가 휴대폰 회전 정보(EXIF)를 반영해 그린다(서버와 같은 방향).
+  async function shrink(file){
+    if (typeof createImageBitmap !== 'function') return null;
+    try {
+      const bmp = await createImageBitmap(file, {imageOrientation: 'from-image'});
+      const k = Math.min(1, PREVIEW / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(bmp.width * k)); c.height = Math.max(1, Math.round(bmp.height * k));
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      if (bmp.close) bmp.close();
+      return c;
+    } catch (e) { return null; }
+  }
+  // 줄인 캔버스를 rot 만큼 시계 방향으로 돌린 캔버스
+  function rotated(src, rot){
+    const c = document.createElement('canvas');
+    const side = rot === 90 || rot === 270;
+    c.width = side ? src.height : src.width; c.height = side ? src.width : src.height;
+    const g = c.getContext('2d');
+    g.translate(c.width / 2, c.height / 2); g.rotate(rot * Math.PI / 180);
+    g.drawImage(src, -src.width / 2, -src.height / 2);
+    return c;
+  }
+  function previewOf(x){
+    if (!x.small) return x.url;
+    return rotated(x.small, x.rot).toDataURL('image/jpeg', 0.8);
+  }
   function draw(){
     list.sort((a, b) => natural(a.file.name, b.file.name));
-    $('#inspThumbs').innerHTML = list.map((x, i) => `<figure><button type="button" class="x" title="빼기" data-i="${i}">×</button><img src="${x.url}" alt=""><figcaption>${esc(stemOf(x.file.name))}</figcaption></figure>`).join('');
+    $('#inspThumbs').innerHTML = list.map((x, i) => `<figure><button type="button" class="x" title="이 사진 빼기" data-i="${i}">×</button>`
+      + `<img src="${previewOf(x)}" alt="" style="${x.small ? '' : `transform:rotate(${x.rot}deg)`}">`
+      + `<figcaption>${esc(stemOf(x.file.name))}</figcaption>`
+      + `<div class="rot"><button type="button" class="mini sub" data-r="${i}" data-d="270" title="왼쪽으로 돌리기">↺</button>`
+      + `<button type="button" class="mini sub" data-r="${i}" data-d="90" title="오른쪽으로 돌리기">↻</button></div>`
+      + (x.auto ? '<span class="autotag">자동 회전</span>' : '') + '</figure>').join('');
     const has = list.length > 0;
-    $('#inspGo').disabled = $('#inspGoWord').disabled = $('#inspClear').disabled = !has;
-    $('#inspMsg').textContent = has ? `사진 ${list.length}장 · ${Math.ceil(list.length / 3)}줄` : '';
+    ['#inspGo', '#inspGoWord', '#inspClear', '#inspAuto'].forEach(s => { $(s).disabled = busy || !has; });
+    const turned = list.filter(x => x.rot).length;
+    $('#inspMsg').textContent = has ? `사진 ${list.length}장 · ${Math.ceil(list.length / 3)}줄` + (turned ? ` · 돌린 사진 ${turned}장` : '') : '';
   }
-  function add(files){
-    const bad = [];
+  async function add(files){
+    const bad = [], fresh = [];
     for (const f of files) {
       if (f.bad || !INSP_EXT.includes(extOf(f.name))) { bad.push(`${f.name} (지원하지 않는 형식)`); continue; }
       if (f.size > MAX_MB * 1024 * 1024) { bad.push(`${f.name} (${MAX_MB}MB 초과)`); continue; }
       if (list.some(x => x.file.name === f.name && x.file.size === f.size)) continue;   // 같은 사진을 두 번 넣지 않는다
-      if (list.length >= MAX_N) { bad.push(`${f.name} (${MAX_N}장 초과)`); continue; }
-      list.push({file: f, url: URL.createObjectURL(f)});
+      if (list.length + fresh.length >= MAX_N) { bad.push(`${f.name} (${MAX_N}장 초과)`); continue; }
+      fresh.push({file: f, rot: 0, small: null, url: URL.createObjectURL(f)});
     }
     showInspProblems(bad, '아래 파일은 넣지 않았습니다.');
+    list = list.concat(fresh);
     draw();
+    for (const x of fresh) { x.small = await shrink(x.file); }
+    if (fresh.length) draw();
   }
   function showInspProblems(items, head){
     const el = $('#inspProblems');
@@ -688,6 +732,13 @@ $('#newUpload').onclick = () => {
     el.classList.remove('hide');
   }
   $('#inspThumbs').addEventListener('click', e => {
+    if (busy) return;
+    const r = e.target.closest('button[data-r]');
+    if (r) {
+      const x = list[Number(r.dataset.r)];
+      if (x) { x.rot = (x.rot + Number(r.dataset.d)) % 360; x.auto = false; draw(); }
+      return;
+    }
     const b = e.target.closest('button.x'); if (!b) return;
     const [gone] = list.splice(Number(b.dataset.i), 1);
     if (gone) URL.revokeObjectURL(gone.url);
@@ -709,13 +760,50 @@ $('#newUpload').onclick = () => {
     add(res.files.concat((res.unsupported || []).map(u => ({name: u.name, size: 0, bad: true}))));
   });
   $('#inspClear').onclick = () => { list.forEach(x => URL.revokeObjectURL(x.url)); list = []; showInspProblems([], ''); draw(); };
+
+  // AI 가 사진마다 똑바로 선 방향을 골라 준다. 결과는 미리보기에 바로 보이고, 틀리면 ↺ ↻ 로 고치면 된다.
+  $('#inspAuto').onclick = async () => {
+    if (busy || !list.length) return;
+    busy = true; draw();
+    const btn = $('#inspAuto'), old = btn.textContent;
+    btn.textContent = `방향 살펴보는 중… (${list.length}장)`;
+    try {
+      const fd = new FormData();
+      const items = list.slice();
+      for (const x of items) {
+        if (!x.small) x.small = await shrink(x.file);
+        const blob = x.small ? await new Promise(r => x.small.toBlob(r, 'image/jpeg', 0.85)) : x.file;
+        fd.append('files', blob, x.file.name);
+      }
+      const r = await fetch('/api/inspection/orient', {method: 'POST', body: fd});
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !Array.isArray(j.rotations)) { $('#inspMsg').textContent = j.detail || '방향을 살펴보지 못했습니다. 사진 아래 ↺ ↻ 버튼으로 직접 돌려 주세요.'; return; }
+      let changed = 0, failed = 0;
+      items.forEach((x, i) => {
+        const v = j.rotations[i];
+        if (v === null || v === undefined) { failed += 1; return; }
+        x.rot = Number(v) || 0; x.auto = !!x.rot;
+        if (x.rot) changed += 1;
+      });
+      busy = false; draw();
+      $('#inspMsg').textContent = `${changed}장을 돌렸습니다.` + (failed ? ` ${failed}장은 판단하지 못했습니다.` : '') + ' 미리보기를 보고 틀린 사진은 ↺ ↻ 로 고쳐 주세요.';
+    } catch (e) {
+      $('#inspMsg').textContent = '연결에 실패했습니다. 사진 아래 ↺ ↻ 버튼으로 직접 돌려 주세요.';
+    } finally {
+      busy = false; btn.textContent = old;
+      ['#inspGo', '#inspGoWord', '#inspClear', '#inspAuto'].forEach(s => { $(s).disabled = !list.length; });
+    }
+  };
+
   async function make(kind){
-    if (!list.length) return;
+    if (busy || !list.length) return;
     const btn = kind === 'xlsx' ? $('#inspGo') : $('#inspGoWord'), old = btn.textContent;
-    $('#inspGo').disabled = $('#inspGoWord').disabled = true;
+    busy = true;
+    ['#inspGo', '#inspGoWord', '#inspAuto'].forEach(s => { $(s).disabled = true; });
     btn.textContent = '만드는 중… (잠시만요)';
     const fd = new FormData();
     list.forEach(x => fd.append('files', x.file, x.file.name));
+    fd.append('rotations', JSON.stringify(list.map(x => x.rot)));
     fd.append('date', $('#inspDate').value || '');
     fd.append('kind', kind);
     try {
@@ -738,8 +826,9 @@ $('#newUpload').onclick = () => {
     } catch (e) {
       $('#inspMsg').textContent = '연결에 실패했습니다. 잠시 뒤 다시 시도해 주세요.';
     } finally {
+      busy = false;
       btn.textContent = old;
-      $('#inspGo').disabled = $('#inspGoWord').disabled = !list.length;
+      ['#inspGo', '#inspGoWord', '#inspClear', '#inspAuto'].forEach(s => { $(s).disabled = !list.length; });
     }
   }
   $('#inspGo').onclick = () => make('xlsx');
