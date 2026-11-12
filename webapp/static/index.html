@@ -49,6 +49,18 @@
   .note{font-size:13px;color:#6b7280;line-height:1.6}
   .problems{margin:12px 0;padding:10px 14px;background:#fff7e6;border:1px solid #f59e0b;border-radius:8px;font-size:13px;line-height:1.6;color:#92400e}
   .problems ul{margin:4px 0 0;padding-left:20px}
+  #inspDrop{display:block;position:relative;border:2px dashed #93c5fd;border-radius:12px;padding:28px 16px;text-align:center;cursor:pointer;background:#eff6ff}
+  #inspDrop.over{background:#dbeafe;border-color:#1d4ed8}
+  #inspDrop b{font-size:17px}
+  #inspDrop small{display:block;color:#6b7280;margin-top:6px}
+  #inspPick{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;font-size:16px}
+  #inspThumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px;margin-top:12px}
+  #inspThumbs figure{margin:0;border:1px solid #e5e7eb;border-radius:8px;padding:6px;text-align:center;font-size:12px;position:relative;background:#fff}
+  #inspThumbs img{width:100%;height:80px;object-fit:contain;display:block;margin-bottom:4px}
+  #inspThumbs figcaption{word-break:break-all}
+  #inspThumbs .x{position:absolute;top:2px;right:2px;background:#fff;color:#b91c1c;border:1px solid #fca5a5;border-radius:50%;width:22px;height:22px;padding:0;font-size:13px;line-height:20px}
+  header .nav{margin-top:10px;font-size:14px}
+  header .nav a{color:#ccfbf1;margin:0 8px}
 </style>
 </head>
 <body>
@@ -56,6 +68,7 @@
   <a class="home" href="/">← 소개</a>
   <h1>식담온 영수증 정리</h1>
   <p>영수증 사진을 올리면 반듯하게 펴서, 내용을 읽고, 식자재 지출현황 엑셀로 만들어 드립니다</p>
+  <div class="nav"><a href="#step1">영수증 정리</a>·<a href="#insp">식자재 검수서(원산지 표시)</a></div>
 </header>
 <main>
 
@@ -128,6 +141,27 @@
     <button class="sub" id="accImages">누적 정리된 사진 받기(zip)</button>
     <span id="accMsg" class="note"></span>
   </div>
+</section>
+
+<section class="card" id="insp">
+  <h3 style="margin-top:0">식자재 검수서 원산지 표시 만들기</h3>
+  <p class="note" style="margin-top:0">식자재 원산지 표시 사진을 올리면 A4 한 쪽에 3장씩 놓고 맨 위에 '식자재 검수서 원산지 표시 + 날짜' 제목을 단 엑셀을 만들어 드립니다. 사진 위에는 <b>파일 이름</b>이 적히므로, 품목 이름(예: 돼지고기 앞다리)으로 파일 이름을 바꿔 올리면 보기 좋습니다. 사진은 파일 이름 순으로 놓입니다.</p>
+  <label id="inspDrop" for="inspPick"><b>원산지 표시 사진을 끌어다 놓거나 눌러서 선택</b>
+    <small>JPG · JPEG · PNG · WEBP · BMP · TIF · TIFF / 폴더째 놓아도 됩니다 / 한 번에 60장까지 / 파일 하나 10MB까지</small></label>
+  <input id="inspPick" type="file" multiple accept=".jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,image/jpeg,image/png,image/webp,image/bmp,image/tiff">
+  <div id="inspThumbs"></div>
+  <div class="row">
+    <label style="font-size:15px"><b>검수 날짜</b> <input type="date" id="inspDate" style="font-size:15px;padding:6px;border:1px solid #cbd5e1;border-radius:6px"></label>
+    <span class="note">제목에 '2026년 11월 12일'처럼 들어가고, 파일 이름은 '원산지 표시_26.11.12.xlsx'가 됩니다.</span>
+  </div>
+  <div class="row">
+    <button id="inspGo" disabled>검수서 엑셀 받기</button>
+    <button class="sub" id="inspGoWord" disabled>워드로 받기</button>
+    <button class="sub" id="inspClear" disabled>사진 모두 빼기</button>
+    <span id="inspMsg" class="note"></span>
+  </div>
+  <div id="inspProblems" class="problems hide"></div>
+  <p class="note">검수서 사진은 엑셀을 만든 즉시 서버에서 지워지며 따로 보관하지 않습니다.</p>
 </section>
 
 </main>
@@ -612,6 +646,105 @@ $('#newUpload').onclick = () => {
   $('#go').disabled = true;
   $('#err').textContent = '영수증을 다시 선택해 주세요.';
 };
+
+// ---- 식자재 검수서(원산지 표시) ----
+// 영수증 정리와는 따로 사진 목록을 가진다. 원산지 표시 사진은 영수증이 아니라 판독하지 않는다.
+(function inspection(){
+  // 화면에 검수서 칸이 없으면(옛 화면·시험용 가짜 화면) 아무것도 하지 않는다
+  const need = ['#insp', '#inspPick', '#inspDrop', '#inspThumbs', '#inspDate', '#inspGo', '#inspGoWord', '#inspClear', '#inspMsg', '#inspProblems'];
+  if (need.some(s => !$(s))) return;
+  const INSP_EXT = ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'];
+  const MAX_N = 60, MAX_MB = 10;
+  let list = [];   // {file, url}
+  const today = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  $('#inspDate').value = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+  const extOf = n => { const i = n.lastIndexOf('.'); return i < 0 ? '' : n.slice(i).toLowerCase(); };
+  const stemOf = n => { const i = n.lastIndexOf('.'); return i < 0 ? n : n.slice(0, i); };
+  const natural = (a, b) => a.localeCompare(b, 'ko', {numeric: true, sensitivity: 'base'});
+  function draw(){
+    list.sort((a, b) => natural(a.file.name, b.file.name));
+    $('#inspThumbs').innerHTML = list.map((x, i) => `<figure><button type="button" class="x" title="빼기" data-i="${i}">×</button><img src="${x.url}" alt=""><figcaption>${esc(stemOf(x.file.name))}</figcaption></figure>`).join('');
+    const has = list.length > 0;
+    $('#inspGo').disabled = $('#inspGoWord').disabled = $('#inspClear').disabled = !has;
+    $('#inspMsg').textContent = has ? `사진 ${list.length}장 · ${Math.ceil(list.length / 3)}줄` : '';
+  }
+  function add(files){
+    const bad = [];
+    for (const f of files) {
+      if (f.bad || !INSP_EXT.includes(extOf(f.name))) { bad.push(`${f.name} (지원하지 않는 형식)`); continue; }
+      if (f.size > MAX_MB * 1024 * 1024) { bad.push(`${f.name} (${MAX_MB}MB 초과)`); continue; }
+      if (list.some(x => x.file.name === f.name && x.file.size === f.size)) continue;   // 같은 사진을 두 번 넣지 않는다
+      if (list.length >= MAX_N) { bad.push(`${f.name} (${MAX_N}장 초과)`); continue; }
+      list.push({file: f, url: URL.createObjectURL(f)});
+    }
+    showInspProblems(bad, '아래 파일은 넣지 않았습니다.');
+    draw();
+  }
+  function showInspProblems(items, head){
+    const el = $('#inspProblems');
+    if (!items.length) { el.classList.add('hide'); el.innerHTML = ''; return; }
+    el.innerHTML = `<b>${esc(head)}</b><ul>` + items.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>';
+    el.classList.remove('hide');
+  }
+  $('#inspThumbs').addEventListener('click', e => {
+    const b = e.target.closest('button.x'); if (!b) return;
+    const [gone] = list.splice(Number(b.dataset.i), 1);
+    if (gone) URL.revokeObjectURL(gone.url);
+    draw();
+  });
+  $('#inspPick').addEventListener('change', e => { add(Array.from(e.target.files || [])); e.target.value = ''; });
+  const zone = $('#inspDrop');
+  ['dragenter', 'dragover'].forEach(t => zone.addEventListener(t, e => { e.preventDefault(); e.stopPropagation(); zone.classList.add('over'); }));
+  zone.addEventListener('dragleave', e => { if (!zone.contains(e.relatedTarget)) zone.classList.remove('over'); });
+  zone.addEventListener('drop', async e => {
+    e.preventDefault(); e.stopPropagation();
+    e.receiptDropHandled = true;          // 영수증 업로드 쪽으로 넘어가지 않게 한다
+    zone.classList.remove('over');
+    if (!uploadApi) return;
+    // 폴더를 끌어다 놓아도 안의 사진을 찾는다 (영수증 올리기와 같은 방식)
+    let res;
+    try { res = await uploadApi.collectSnapshot(uploadApi.snapshotDataTransfer(e.dataTransfer)); }
+    catch (err) { showInspProblems(['사진을 읽지 못했습니다. 눌러서 선택해 주세요.'], '사진을 넣지 못했습니다.'); return; }
+    add(res.files.concat((res.unsupported || []).map(u => ({name: u.name, size: 0, bad: true}))));
+  });
+  $('#inspClear').onclick = () => { list.forEach(x => URL.revokeObjectURL(x.url)); list = []; showInspProblems([], ''); draw(); };
+  async function make(kind){
+    if (!list.length) return;
+    const btn = kind === 'xlsx' ? $('#inspGo') : $('#inspGoWord'), old = btn.textContent;
+    $('#inspGo').disabled = $('#inspGoWord').disabled = true;
+    btn.textContent = '만드는 중… (잠시만요)';
+    const fd = new FormData();
+    list.forEach(x => fd.append('files', x.file, x.file.name));
+    fd.append('date', $('#inspDate').value || '');
+    fd.append('kind', kind);
+    try {
+      const r = await fetch('/api/inspection', {method: 'POST', body: fd});
+      if (r.status === 401) { $('#inspMsg').textContent = '접속 확인이 필요합니다. 새로고침 후 다시 로그인해 주세요.'; return; }
+      if (!r.ok) { const j = await r.json().catch(() => ({})); $('#inspMsg').textContent = j.detail || '검수서를 만들지 못했습니다. 잠시 뒤 다시 시도해 주세요.'; return; }
+      let skipped = [];
+      try { skipped = JSON.parse(decodeURIComponent(r.headers.get('X-Insp-Skipped') || '%5B%5D')); } catch (e) {}
+      const cd = r.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename\*=UTF-8''([^;]+)/i);
+      const d = $('#inspDate').value;
+      const fallback = '원산지 표시_' + (d ? d.slice(2).replace(/-/g, '.') : '') + '.' + kind;
+      const blob = await r.blob(), a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = m ? decodeURIComponent(m[1]) : fallback;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      $('#inspMsg').textContent = `만들었습니다. 사진 ${r.headers.get('X-Insp-Count') || list.length}장이 들어갔습니다.`;
+      showInspProblems(skipped, '아래 사진은 열 수 없어 검수서에 넣지 못했습니다.');
+    } catch (e) {
+      $('#inspMsg').textContent = '연결에 실패했습니다. 잠시 뒤 다시 시도해 주세요.';
+    } finally {
+      btn.textContent = old;
+      $('#inspGo').disabled = $('#inspGoWord').disabled = !list.length;
+    }
+  }
+  $('#inspGo').onclick = () => make('xlsx');
+  $('#inspGoWord').onclick = () => make('docx');
+})();
 
 // 새로고침해도 마지막 작업을 이어서 보여 준다. 없는 작업은 진행 화면에 가두지 않는다.
 const last = localStorage.getItem('lastJob');
