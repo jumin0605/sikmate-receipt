@@ -43,6 +43,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from env_config import load_project_env
+from inspection import INSP_ALLOWED_EXT, build_inspection
 from job_resume import classify_on_restart, clear_derived_outputs
 
 HERE = Path(__file__).resolve().parent
@@ -945,6 +946,60 @@ def download(job_id: str, kind: str, rc_auth: str | None = Cookie(default=None))
         raise HTTPException(404, "파일이 아직 없습니다.")
     path, nice = files[kind]
     return FileResponse(path, filename=nice)
+
+
+# ---------------------------------------------------------------------------
+# 식자재 검수서(원산지 표시): 사진을 받아 바로 엑셀(또는 워드)로 돌려준다.
+# 판독(Gemini)을 쓰지 않으므로 줄을 세우지 않고, 만든 파일은 내려 준 뒤 바로 지운다.
+# ---------------------------------------------------------------------------
+MAX_INSP_FILES = int(os.environ.get("MAX_INSP_FILES", "60"))
+_insp_lock = threading.Lock()     # 한 번에 하나만 (메모리 보호)
+
+
+@app.post("/api/inspection")
+def make_inspection_sheet(files: list[UploadFile] = File(...), date: str = Form(""),
+                          kind: str = Form("xlsx"), rc_auth: str | None = Cookie(default=None)):
+    _check_auth(rc_auth)
+    if kind not in ("xlsx", "docx"):
+        raise HTTPException(400, "알 수 없는 파일 형식입니다.")
+    if not files:
+        raise HTTPException(400, "원산지 표시 사진을 선택해 주세요.")
+    if len(files) > MAX_INSP_FILES:
+        raise HTTPException(400, f"검수서에는 한 번에 {MAX_INSP_FILES}장까지 넣을 수 있습니다.")
+    base = DATA_DIR / "insp"
+    base.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(dir=base))
+    try:
+        uploads, too_big = [], []
+        for uf in files:
+            name = Path(_decode_filename(uf.filename or "")).name
+            if Path(name).suffix.lower() not in INSP_ALLOWED_EXT:
+                too_big.append(f"{name} (지원하지 않는 형식)")
+                continue
+            data = uf.file.read(MAX_FILE_MB * 1024 * 1024 + 1)
+            if len(data) > MAX_FILE_MB * 1024 * 1024:
+                too_big.append(f"{name} ({MAX_FILE_MB}MB 초과)")
+                continue
+            uploads.append((name, data))
+        with _insp_lock:
+            try:
+                out, nice, skipped, count = build_inspection(core, uploads, tmp, date_text=date, kind=kind)
+            except ValueError as e:
+                msg = str(e) if uploads else "검수서에 넣을 수 있는 사진이 없습니다. " + ", ".join(too_big)
+                raise HTTPException(400, msg[:300])
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(500, f"검수서를 만들지 못했습니다. ({str(e)[:80]})")
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    from urllib.parse import quote
+    skipped = too_big + skipped
+    media = ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if kind == "xlsx"
+             else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    return FileResponse(out, filename=nice, media_type=media,
+                        headers={"X-Insp-Count": str(count),
+                                 "X-Insp-Skipped": quote(json.dumps(skipped, ensure_ascii=False))},
+                        background=BackgroundTask(shutil.rmtree, tmp, True))
 
 
 @app.delete("/api/jobs/{job_id}")
