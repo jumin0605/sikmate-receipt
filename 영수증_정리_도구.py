@@ -4202,11 +4202,18 @@ def _insp_word(images, title, path, log=print):
             fn_para.paragraph_format.space_after = Pt(2)
             try:
                 buf = _insp_thumb(image_path, 300, 225, "JPEG")
+                with Image.open(buf) as t:
+                    tw, th = t.size
+                buf.seek(0)
                 im_para = cell.add_paragraph()
                 im_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 im_para.paragraph_format.space_before = Pt(0)
                 im_para.paragraph_format.space_after = Pt(6)
-                im_para.add_run().add_picture(buf, width=Inches(2.2))
+                # 가로 2.2인치 x 세로 1.65인치 상자 안에 비율을 지켜 넣는다 (세로 사진이 길게 늘어나지 않게)
+                if tw * 0.75 >= th:
+                    im_para.add_run().add_picture(buf, width=Inches(2.2))
+                else:
+                    im_para.add_run().add_picture(buf, height=Inches(1.65))
             except Exception as e:  # 한 장이 깨져도 나머지는 넣는다
                 log(f"[건너뜀] 워드 사진 {os.path.basename(image_path)}: {e}")
     doc.save(path)
@@ -4262,7 +4269,8 @@ def _insp_excel(images, title, path, log=print):
             c = ws.cell(row=xl_row, column=ci + 1)
             c.value = os.path.splitext(os.path.basename(image_path))[0]
             c.font = Font(size=9)
-            c.alignment = Alignment(horizontal="center", vertical="center")
+            # 긴 이름(카카오톡 사진 등)이 옆 칸으로 넘치거나 잘리지 않게 글자를 줄여 맞춘다
+            c.alignment = Alignment(horizontal="center", vertical="center", shrink_to_fit=True)
         xl_row += 1
 
         ws.row_dimensions[xl_row].height = img_row
@@ -4270,12 +4278,18 @@ def _insp_excel(images, title, path, log=print):
             c = ws.cell(row=xl_row, column=ci + 1)
             c.alignment = Alignment(horizontal="center", vertical="center")
             try:
-                xl_img = XLImage(_insp_thumb(image_path, img_w, img_h, "PNG"))
-                xl_img.width, xl_img.height = img_w, img_h
+                buf = _insp_thumb(image_path, img_w, img_h, "PNG")
+                # 줄인 사진의 실제 크기를 쓴다. 상자 크기(img_w x img_h)로 강제하면
+                # 세로 사진이 옆으로 늘어나 뚱뚱해 보인다.
+                with Image.open(buf) as t:
+                    tw, th = t.size
+                buf.seek(0)
+                xl_img = XLImage(buf)
+                xl_img.width, xl_img.height = tw, th
                 # 칸 가운데에 오도록 밀어 둔다
-                marker = AnchorMarker(col=ci, colOff=pixels_to_EMU(max(0, (col_w_px - img_w) // 2)),
-                                      row=xl_row - 1, rowOff=pixels_to_EMU(max(0, (row_h_px - img_h) // 2)))
-                size = XDRPositiveSize2D(pixels_to_EMU(img_w), pixels_to_EMU(img_h))
+                marker = AnchorMarker(col=ci, colOff=pixels_to_EMU(max(0, (col_w_px - tw) // 2)),
+                                      row=xl_row - 1, rowOff=pixels_to_EMU(max(0, (row_h_px - th) // 2)))
+                size = XDRPositiveSize2D(pixels_to_EMU(tw), pixels_to_EMU(th))
                 xl_img.anchor = OneCellAnchor(_from=marker, ext=size)
                 ws.add_image(xl_img)
             except Exception as e:
