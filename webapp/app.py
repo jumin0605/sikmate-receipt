@@ -1031,7 +1031,14 @@ def orient_photos(files: list[UploadFile] = File(...), rc_auth: str | None = Coo
     try:
         client = core.json_client()
         if "model" not in _orient_model:
-            _orient_model["model"] = core.json_resolve_model(client, MODEL, log=lambda m: print(m, flush=True))
+            # 방향 고르기는 쉬운 일이라 더 가벼운(빠른) 모델을 따로 지정할 수 있다. 비우면 영수증 판독 모델을 쓴다.
+            want = os.environ.get("GEMINI_ORIENT_MODEL", "").strip() or MODEL
+            _orient_model["model"] = core.json_resolve_model(client, want, log=lambda m: print(m, flush=True))
+            try:
+                names = [m.name for m in client.models.list() if "flash" in (m.name or "")]
+                print(f"[방향] 쓸 모델: {_orient_model['model']} / 쓸 수 있는 flash 모델: {names[:20]}", flush=True)
+            except Exception:  # noqa: BLE001
+                pass
         model = _orient_model["model"]
     except Exception as e:  # noqa: BLE001
         admin_note("orient", f"방향 판단 준비 실패: {e}")

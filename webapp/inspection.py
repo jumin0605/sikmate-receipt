@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import re
+import time
 from datetime import date, datetime
 from pathlib import Path
 
@@ -210,9 +211,11 @@ def _ask_orientation(client, model, png: bytes) -> dict:
             last = e
             continue
         try:
+            t0 = time.time()
             resp = client.models.generate_content(
                 model=model, config=cfg,
                 contents=[types.Part.from_bytes(data=png, mime_type="image/png"), ORIENT_PROMPT])
+            print(f"[방향] {model} {opt} {time.time() - t0:.1f}초", flush=True)
         except Exception as e:  # noqa: BLE001
             msg = str(e).lower()
             if opt and ("think" in msg or "invalid" in msg or "400" in msg):
