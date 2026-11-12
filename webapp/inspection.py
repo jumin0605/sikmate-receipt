@@ -189,8 +189,50 @@ def orientation_sheet(data: bytes, cell: int = 380) -> bytes:
     return buf.getvalue()
 
 
+# 방향 고르기는 쉬운 질문이라 깊이 생각(thinking)할 필요가 없다. 생각을 켜 두면 한 장에 수 초씩 걸려
+# 40장이면 몇 분이 된다. 모델마다 받는 설정이 달라 차례로 시도하고, 통한 설정을 기억해 둔다.
+_THINK_OPTIONS = ({"thinking_level": "minimal"}, {"thinking_level": "low"}, {"thinking_budget": 0}, None)
+_think_ok: dict = {}
+
+
+def _ask_orientation(client, model, png: bytes) -> dict:
+    import json
+    from google.genai import types
+    start = _think_ok.get(model, 0)
+    last = None
+    for i in range(start, len(_THINK_OPTIONS)):
+        opt = _THINK_OPTIONS[i]
+        try:
+            extra = {"thinking_config": types.ThinkingConfig(**opt)} if opt else {}
+            cfg = types.GenerateContentConfig(response_mime_type="application/json",
+                                              response_schema=ORIENT_SCHEMA, temperature=0, **extra)
+        except Exception as e:  # noqa: BLE001  설치된 라이브러리가 그 설정을 모름
+            last = e
+            continue
+        try:
+            resp = client.models.generate_content(
+                model=model, config=cfg,
+                contents=[types.Part.from_bytes(data=png, mime_type="image/png"), ORIENT_PROMPT])
+        except Exception as e:  # noqa: BLE001
+            msg = str(e).lower()
+            if opt and ("think" in msg or "invalid" in msg or "400" in msg):
+                last = e          # 이 모델이 이 생각 설정을 받지 않음 -> 다음 설정으로
+                continue
+            raise
+        _think_ok[model] = i
+        return json.loads(resp.text)
+    raise RuntimeError(f"방향 판단 호출 실패: {last}")
+
+
 def detect_rotation(core, client, model, data: bytes) -> int:
     """AI 에게 똑바로 선 칸을 고르게 해서 시계 방향 회전 도를 돌려준다."""
-    ans = core.json_ask(client, orientation_sheet(data), model, schema=ORIENT_SCHEMA, prompt=ORIENT_PROMPT)
+    png = orientation_sheet(data)
+    if hasattr(core, "json_client"):          # 진짜 서버: 생각을 줄여 빠르게 묻는다
+        try:
+            ans = _ask_orientation(client, model, png)
+        except Exception:  # noqa: BLE001  한 번 더, 기존 도구의 호출(재시도 포함)로
+            ans = core.json_ask(client, png, model, schema=ORIENT_SCHEMA, prompt=ORIENT_PROMPT)
+    else:                                     # 시험용 가짜 core
+        ans = core.json_ask(client, png, model, schema=ORIENT_SCHEMA, prompt=ORIENT_PROMPT)
     letter = str((ans or {}).get("upright", "A")).strip().upper()[:1]
     return ROTATIONS[ORIENT_LETTERS.index(letter)] if letter in ORIENT_LETTERS else 0

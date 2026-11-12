@@ -1047,7 +1047,7 @@ def orient_photos(files: list[UploadFile] = File(...), rc_auth: str | None = Coo
             return None
 
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=8) as ex:     # 화면은 8장씩 보낸다
         rotations = list(ex.map(one, datas))
     return {"rotations": rotations}
 
