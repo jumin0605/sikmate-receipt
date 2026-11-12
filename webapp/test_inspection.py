@@ -94,6 +94,24 @@ class Build(unittest.TestCase):
             ws = load_workbook(out).active
             self.assertEqual([ws.cell(3, 1).value, ws.cell(3, 2).value], ["1. 돼지고기 앞다리", "2. 쌀"])
 
+    def test_portrait_photo_is_not_stretched(self):
+        """세로 사진이 가로 상자(4:3)로 늘어나 뚱뚱해지면 안 된다."""
+        from openpyxl import load_workbook
+        with tempfile.TemporaryDirectory() as d:
+            out, *_ = insp.build_inspection(self.core, [("세로.jpg", jpeg(600, 1200)), ("가로.jpg", jpeg(1200, 900))],
+                                            Path(d), "2026-11-12")
+            imgs = load_workbook(out).active._images
+            ratios = sorted(i.width / i.height for i in imgs)
+            self.assertAlmostEqual(ratios[0], 0.5, delta=0.02)
+            self.assertAlmostEqual(ratios[1], 4 / 3, delta=0.02)
+
+    def test_user_rotation_is_applied(self):
+        from openpyxl import load_workbook
+        with tempfile.TemporaryDirectory() as d:
+            out, *_ = insp.build_inspection(self.core, [("누운사진.jpg", jpeg(1200, 600), 90)], Path(d))
+            img = load_workbook(out).active._images[0]
+            self.assertLess(img.width, img.height)      # 가로 사진을 90도 돌려 세로가 됐다
+
     def test_word(self):
         from docx import Document
         with tempfile.TemporaryDirectory() as d:
@@ -107,6 +125,34 @@ class Build(unittest.TestCase):
                 insp.build_inspection(self.core, [("x.heic", b"..")], Path(d))
 
 
+class Orientation(unittest.TestCase):
+    def test_norm_rotation(self):
+        self.assertEqual([insp.norm_rotation(v) for v in (0, 90, "180", 270, 360, -90, 45, None, "x")],
+                         [0, 90, 180, 270, 0, 270, 0, 0, 0])
+
+    def test_rotation_direction_is_clockwise(self):
+        im = Image.new("RGB", (20, 10), "white")
+        im.putpixel((0, 0), (255, 0, 0))            # 왼쪽 위 빨간 점
+        r = insp.rotate_cw(im, 90)
+        self.assertEqual(r.size, (10, 20))
+        self.assertEqual(r.getpixel((9, 0)), (255, 0, 0))   # 시계 방향 90도면 오른쪽 위로 간다
+
+    def test_sheet_has_four_cells(self):
+        png = insp.orientation_sheet(jpeg(800, 400), cell=200)
+        with Image.open(io.BytesIO(png)) as im:
+            self.assertEqual(im.size, (400, 400))
+
+    def test_detect_maps_letter_to_degrees(self):
+        class FakeCore:
+            def __init__(self, letter):
+                self.letter = letter
+
+            def json_ask(self, client, png, model, schema=None, prompt=None):
+                return {"upright": self.letter}
+        got = [insp.detect_rotation(FakeCore(l), None, "m", jpeg(100, 80)) for l in "ABCDz"]
+        self.assertEqual(got, [0, 90, 180, 270, 0])
+
+
 class Wiring(unittest.TestCase):
     def test_app_and_page_are_connected(self):
         app = (ROOT / "app.py").read_text(encoding="utf-8")
@@ -115,6 +161,11 @@ class Wiring(unittest.TestCase):
         self.assertIn("build_inspection(core", app)
         self.assertIn("fetch('/api/inspection'", html)
         self.assertIn('id="insp"', html)
+        self.assertIn('@app.post("/api/inspection/orient")', app)
+        self.assertIn("fetch('/api/inspection/orient'", html)
+        self.assertIn("fd.append('rotations'", html)
+        self.assertIn(">목록 비우기<", html)
+        self.assertNotIn("사진 모두 빼기", html)
 
 
 if __name__ == "__main__":

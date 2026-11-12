@@ -43,7 +43,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from env_config import load_project_env
-from inspection import INSP_ALLOWED_EXT, build_inspection
+from inspection import INSP_ALLOWED_EXT, build_inspection, detect_rotation, norm_rotation
 from job_resume import classify_on_restart, clear_derived_outputs
 
 HERE = Path(__file__).resolve().parent
@@ -958,8 +958,16 @@ _insp_lock = threading.Lock()     # 한 번에 하나만 (메모리 보호)
 
 @app.post("/api/inspection")
 def make_inspection_sheet(files: list[UploadFile] = File(...), date: str = Form(""),
-                          kind: str = Form("xlsx"), rc_auth: str | None = Cookie(default=None)):
+                          kind: str = Form("xlsx"), rotations: str = Form(""),
+                          rc_auth: str | None = Cookie(default=None)):
+    """rotations: 올린 파일 순서대로 시계 방향 회전 도를 담은 JSON 배열 (예: [0, 90, 180])."""
     _check_auth(rc_auth)
+    try:
+        rots = json.loads(rotations) if rotations else []
+    except ValueError:
+        rots = []
+    if not isinstance(rots, list):
+        rots = []
     if kind not in ("xlsx", "docx"):
         raise HTTPException(400, "알 수 없는 파일 형식입니다.")
     if not files:
@@ -971,7 +979,7 @@ def make_inspection_sheet(files: list[UploadFile] = File(...), date: str = Form(
     tmp = Path(tempfile.mkdtemp(dir=base))
     try:
         uploads, too_big = [], []
-        for uf in files:
+        for i, uf in enumerate(files):
             name = Path(_decode_filename(uf.filename or "")).name
             if Path(name).suffix.lower() not in INSP_ALLOWED_EXT:
                 too_big.append(f"{name} (지원하지 않는 형식)")
@@ -980,7 +988,7 @@ def make_inspection_sheet(files: list[UploadFile] = File(...), date: str = Form(
             if len(data) > MAX_FILE_MB * 1024 * 1024:
                 too_big.append(f"{name} ({MAX_FILE_MB}MB 초과)")
                 continue
-            uploads.append((name, data))
+            uploads.append((name, data, norm_rotation(rots[i] if i < len(rots) else 0)))
         with _insp_lock:
             try:
                 out, nice, skipped, count = build_inspection(core, uploads, tmp, date_text=date, kind=kind)
@@ -1000,6 +1008,48 @@ def make_inspection_sheet(files: list[UploadFile] = File(...), date: str = Form(
                         headers={"X-Insp-Count": str(count),
                                  "X-Insp-Skipped": quote(json.dumps(skipped, ensure_ascii=False))},
                         background=BackgroundTask(shutil.rmtree, tmp, True))
+
+
+_orient_model: dict = {}
+
+
+@app.post("/api/inspection/orient")
+def orient_photos(files: list[UploadFile] = File(...), rc_auth: str | None = Cookie(default=None)):
+    """원산지 사진이 눌거나 뒤집혔는지 AI 로 판단해 사진마다 시계 방향 회전 도를 돌려준다.
+
+    브라우저가 줄인 사진(긴 변 약 500px)을 보낸다. 판단에 실패한 사진은 null.
+    카카오톡으로 받은 사진은 회전 정보가 빠져 있어 내용을 보고 판단할 수밖에 없다.
+    """
+    _check_auth(rc_auth)
+    if not os.environ.get("GEMINI_API_KEY"):
+        raise HTTPException(500, "서버에 판독 키가 설정되어 있지 않습니다.")
+    if not files or len(files) > MAX_INSP_FILES:
+        raise HTTPException(400, f"사진은 1~{MAX_INSP_FILES}장까지 보낼 수 있습니다.")
+    if files_today() + len(files) > DAILY_FILE_LIMIT:
+        raise HTTPException(429, "오늘 처리 가능한 양을 넘었습니다. 사진 옆 ↻ 버튼으로 직접 돌려 주세요.")
+    datas = [uf.file.read(3 * 1024 * 1024 + 1) for uf in files]
+    try:
+        client = core.json_client()
+        if "model" not in _orient_model:
+            _orient_model["model"] = core.json_resolve_model(client, MODEL, log=lambda m: print(m, flush=True))
+        model = _orient_model["model"]
+    except Exception as e:  # noqa: BLE001
+        admin_note("orient", f"방향 판단 준비 실패: {e}")
+        raise HTTPException(503, "자동 방향 맞추기를 지금 쓸 수 없습니다. 사진 옆 ↻ 버튼으로 직접 돌려 주세요.")
+
+    def one(data):
+        if len(data) > 3 * 1024 * 1024:
+            return None
+        try:
+            return detect_rotation(core, client, model, data)
+        except Exception as e:  # noqa: BLE001
+            admin_note("orient", f"방향 판단 실패: {str(e)[:120]}")
+            return None
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        rotations = list(ex.map(one, datas))
+    return {"rotations": rotations}
 
 
 @app.delete("/api/jobs/{job_id}")
