@@ -54,7 +54,9 @@
   #inspDrop b{font-size:17px}
   #inspDrop small{display:block;color:#6b7280;margin-top:6px}
   #inspPick{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;font-size:16px}
-  #inspThumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px;margin-top:12px}
+  #inspThumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:12px}
+  #inspThumbs textarea.nm{width:100%;font:12px/1.3 inherit;font-family:inherit;padding:4px;border:1px solid #cbd5e1;border-radius:6px;text-align:center;resize:none;display:block;overflow:hidden}
+  #inspThumbs .autotag.warn{background:#fef3c7;color:#92400e}
   #inspThumbs figure{margin:0;border:1px solid #e5e7eb;border-radius:8px;padding:6px;text-align:center;font-size:12px;position:relative;background:#fff}
   #inspThumbs img{width:100%;height:80px;object-fit:contain;display:block;margin-bottom:4px}
   #inspThumbs figcaption{word-break:break-all}
@@ -148,7 +150,7 @@
 
 <section class="card" id="insp">
   <h3 style="margin-top:0">식자재 검수서 원산지 표시 만들기</h3>
-  <p class="note" style="margin-top:0">식자재 원산지 표시 사진을 올리면 A4 한 쪽에 3장씩 놓고 맨 위에 '식자재 검수서 원산지 표시 + 날짜' 제목을 단 엑셀을 만들어 드립니다. 사진 위에는 <b>파일 이름</b>이 적히므로, 품목 이름(예: 돼지고기 앞다리)으로 파일 이름을 바꿔 올리면 보기 좋습니다. 사진은 파일 이름 순으로 놓입니다.</p>
+  <p class="note" style="margin-top:0">식자재 원산지 표시 사진을 올리면 A4 한 쪽에 3장씩 놓고 맨 위에 '식자재 검수서 원산지 표시 + 날짜' 제목을 단 엑셀을 만들어 드립니다. 사진을 올리면 AI가 품명과 원산지를 읽어 사진 이름을 <b>'참치 통조림 26.11.09 러시아산'</b>처럼 자동으로 붙입니다(날짜는 사진 파일 이름에서 가져옵니다. 카카오톡 사진은 받은 날짜가 파일 이름에 들어 있습니다). 이름 칸을 눌러 고칠 수 있고, 이 이름이 엑셀의 사진 위에 적힙니다. 사진은 올린 파일 이름 순으로 놓입니다.</p>
   <label id="inspDrop" for="inspPick"><b>원산지 표시 사진을 끌어다 놓거나 눌러서 선택</b>
     <small>JPG · JPEG · PNG · WEBP · BMP · TIF · TIFF / 폴더째 놓아도 됩니다 / 한 번에 60장까지 / 파일 하나 10MB까지</small></label>
   <input id="inspPick" type="file" multiple accept=".jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,image/jpeg,image/png,image/webp,image/bmp,image/tiff">
@@ -159,8 +161,10 @@
   </div>
   <div class="row">
     <button class="sub" id="inspAuto" disabled title="누웠거나 뒤집힌 사진을 AI가 찾아 똑바로 돌립니다">방향 자동 맞추기</button>
+    <button class="sub" id="inspRead" disabled title="사진 내용을 읽어 이름을 처음부터 다시 붙입니다">이름 다시 읽기</button>
     <button id="inspGo" disabled>검수서 엑셀 받기</button>
     <button class="sub" id="inspGoWord" disabled>워드로 받기</button>
+    <button class="sub" id="inspZip" disabled title="이름을 붙인 사진 파일들을 zip 으로 받습니다(돌린 방향도 반영)">이름 붙인 사진 받기(zip)</button>
     <button class="sub" id="inspClear" disabled>목록 비우기</button>
     <span id="inspMsg" class="note"></span>
   </div>
@@ -653,29 +657,38 @@ $('#newUpload').onclick = () => {
 };
 
 // ---- 식자재 검수서(원산지 표시) ----
-// 영수증 정리와는 따로 사진 목록을 가진다. 원산지 표시 사진은 영수증이 아니라 판독하지 않는다.
+// 영수증 정리와는 따로 사진 목록을 가진다.
+// 사진을 넣으면 AI 가 품명·원산지를 읽어 이름을 '참치 통조림 26.11.09 러시아산' 처럼 붙인다(날짜는 파일 이름에서).
 (function inspection(){
   // 화면에 검수서 칸이 없으면(옛 화면·시험용 가짜 화면) 아무것도 하지 않는다
-  const need = ['#insp', '#inspPick', '#inspDrop', '#inspThumbs', '#inspDate', '#inspGo', '#inspGoWord', '#inspClear', '#inspAuto', '#inspMsg', '#inspProblems'];
+  const need = ['#insp', '#inspPick', '#inspDrop', '#inspThumbs', '#inspDate', '#inspGo', '#inspGoWord', '#inspClear', '#inspAuto', '#inspRead', '#inspZip', '#inspMsg', '#inspProblems'];
   if (need.some(s => !$(s))) return;
   const INSP_EXT = ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'];
-  const MAX_N = 60, MAX_MB = 10, PREVIEW = 480;
-  // {file, rot(시계 방향 도), small(줄인 캔버스, 없으면 null), url(미리보기)}
+  const MAX_N = 60, MAX_MB = 10, PREVIEW = 480, READ_SIZE = 1100, CHUNK = 8, READ_CHUNK = 6;
+  const BUTTONS = ['#inspGo', '#inspGoWord', '#inspClear', '#inspAuto', '#inspRead', '#inspZip'];
+  // {file, rot(시계 방향 도), small(줄인 캔버스), url(미리보기), name(사진 이름, 확장자 없음), edited, read('todo'|'busy'|'done'|'fail'|'')}
   let list = [];
-  let busy = false;
+  let busy = false, reading = false;
   const today = new Date();
   const pad = n => String(n).padStart(2, '0');
   $('#inspDate').value = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
   const extOf = n => { const i = n.lastIndexOf('.'); return i < 0 ? '' : n.slice(i).toLowerCase(); };
   const stemOf = n => { const i = n.lastIndexOf('.'); return i < 0 ? n : n.slice(0, i); };
   const natural = (a, b) => a.localeCompare(b, 'ko', {numeric: true, sensitivity: 'base'});
+  // 서버로 보낼 파일 이름 = 사진 이름 + 원래 확장자. 파일 이름에 못 쓰는 글자는 뺀다.
+  const safeName = s => s.replace(/\s+/g, ' ').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').trim();
+  const uploadName = x => (safeName(x.name) || safeName(stemOf(x.file.name)) || '원산지 사진') + extOf(x.file.name);
+  function refreshButtons(){
+    const off = busy || reading || !list.length;
+    BUTTONS.forEach(s => { $(s).disabled = off; });
+  }
 
-  // 사진을 긴 변 PREVIEW px 로 줄인 캔버스. 브라우저가 휴대폰 회전 정보(EXIF)를 반영해 그린다(서버와 같은 방향).
-  async function shrink(file){
+  // 사진을 긴 변 size px 로 줄인 캔버스. 브라우저가 휴대폰 회전 정보(EXIF)를 반영해 그린다(서버와 같은 방향).
+  async function shrink(file, size){
     if (typeof createImageBitmap !== 'function') return null;
     try {
       const bmp = await createImageBitmap(file, {imageOrientation: 'from-image'});
-      const k = Math.min(1, PREVIEW / Math.max(bmp.width, bmp.height));
+      const k = Math.min(1, (size || PREVIEW) / Math.max(bmp.width, bmp.height));
       const c = document.createElement('canvas');
       c.width = Math.max(1, Math.round(bmp.width * k)); c.height = Math.max(1, Math.round(bmp.height * k));
       c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
@@ -693,23 +706,76 @@ $('#newUpload').onclick = () => {
     g.drawImage(src, -src.width / 2, -src.height / 2);
     return c;
   }
+  const toBlob = (canvas, q) => new Promise(r => canvas.toBlob(r, 'image/jpeg', q || 0.85));
   function previewOf(x){
     if (!x.small) return x.url;
     return rotated(x.small, x.rot).toDataURL('image/jpeg', 0.8);
   }
+  function tagOf(x){
+    if (x.read === 'busy' || x.read === 'todo') return '<span class="autotag">이름 읽는 중…</span>';
+    if (x.read === 'fail') return '<span class="autotag warn">이름을 못 읽었어요</span>';
+    return '';
+  }
   function draw(){
-    list.sort((a, b) => natural(a.file.name, b.file.name));
     $('#inspThumbs').innerHTML = list.map((x, i) => `<figure><button type="button" class="x" title="이 사진 빼기" data-i="${i}">×</button>`
       + `<img src="${previewOf(x)}" alt="" style="${x.small ? '' : `transform:rotate(${x.rot}deg)`}">`
-      + `<figcaption>${esc(stemOf(x.file.name))}</figcaption>`
+      + `<textarea class="nm" rows="2" maxlength="60" data-n="${i}" title="이 이름이 엑셀의 사진 위에 적힙니다" aria-label="사진 이름">${esc(x.name)}</textarea>`
       + `<div class="rot"><button type="button" class="mini sub" data-r="${i}" data-d="270" title="왼쪽으로 돌리기">↺</button>`
       + `<button type="button" class="mini sub" data-r="${i}" data-d="90" title="오른쪽으로 돌리기">↻</button></div>`
-      + (x.auto ? '<span class="autotag">자동 회전</span>' : '') + '</figure>').join('');
-    const has = list.length > 0;
-    ['#inspGo', '#inspGoWord', '#inspClear', '#inspAuto'].forEach(s => { $(s).disabled = busy || !has; });
+      + (x.auto ? '<span class="autotag">자동 회전</span> ' : '') + tagOf(x) + '</figure>').join('');
+    refreshButtons();
     const turned = list.filter(x => x.rot).length;
-    $('#inspMsg').textContent = has ? `사진 ${list.length}장 · ${Math.ceil(list.length / 3)}줄` + (turned ? ` · 돌린 사진 ${turned}장` : '') : '';
+    if (!busy && !reading) $('#inspMsg').textContent = list.length ? `사진 ${list.length}장 · ${Math.ceil(list.length / 3)}줄` + (turned ? ` · 돌린 사진 ${turned}장` : '') : '';
   }
+
+  // ---- 이름 자동 붙이기: 사진을 읽어 '품명 날짜 원산지' ----
+  // 아직 읽지 않은(read === 'todo') 사진을 READ_CHUNK 장씩 서버로 보낸다. 이미 돌고 있으면 그 반복이 새로 들어온 사진도 이어서 읽는다.
+  async function readNames(){
+    if (reading) return;
+    reading = true; refreshButtons();
+    let okN = 0, failN = 0, total = list.filter(x => x.read === 'todo').length, done = 0, stopMsg = '';
+    try {
+      for (;;) {
+        const part = list.filter(x => x.read === 'todo').slice(0, READ_CHUNK);
+        if (!part.length) break;
+        part.forEach(x => { x.read = 'busy'; });
+        total = Math.max(total, done + part.length);
+        $('#inspMsg').textContent = `사진 이름 읽는 중… ${done}/${total}`;
+        draw();
+        const fd = new FormData();
+        for (const x of part) {
+          let c = await shrink(x.file, READ_SIZE);
+          if (c && x.rot) c = rotated(c, x.rot);
+          // 서버가 파일 이름에서 날짜를 찾으므로 원래 파일 이름 그대로 보낸다
+          fd.append('files', c ? await toBlob(c, 0.85) : x.file, x.file.name);
+        }
+        let j = null, r = null;
+        try { r = await fetch('/api/inspection/read', {method: 'POST', body: fd}); j = await r.json().catch(() => null); } catch (e) { r = null; }
+        if (!r || !r.ok || !j || !Array.isArray(j.items)) {
+          part.forEach(x => { x.read = 'fail'; failN += 1; });
+          stopMsg = (j && j.detail) || (r ? '' : '연결에 실패했습니다.');
+          // 서버가 아예 못 쓰는 상태(키·한도 문제)면 남은 사진도 계속 보내지 않는다
+          if (r && (r.status === 401 || r.status === 429 || r.status >= 500)) { list.filter(x => x.read === 'todo').forEach(x => { x.read = 'fail'; failN += 1; }); break; }
+          done += part.length; continue;
+        }
+        part.forEach((x, i) => {
+          const it = j.items[i];
+          if (it && it.name && !x.edited) { x.name = it.name; x.read = 'done'; okN += 1; }
+          else if (it && it.name) { x.read = 'done'; }              // 사용자가 이미 고친 이름은 덮어쓰지 않는다
+          else { x.read = 'fail'; failN += 1; }
+        });
+        done += part.length;
+        draw();
+      }
+    } finally {
+      reading = false;
+      draw();
+      $('#inspMsg').textContent = (okN ? `이름을 ${okN}장 붙였습니다.` : '이름을 붙이지 못했습니다.')
+        + (failN ? ` ${failN}장은 못 읽어서 원래 이름 그대로입니다.` : '')
+        + (stopMsg ? ' ' + stopMsg : '') + ' 틀린 이름은 이름 칸을 눌러 고쳐 주세요.';
+    }
+  }
+
   async function add(files){
     const bad = [], fresh = [];
     for (const f of files) {
@@ -717,13 +783,14 @@ $('#newUpload').onclick = () => {
       if (f.size > MAX_MB * 1024 * 1024) { bad.push(`${f.name} (${MAX_MB}MB 초과)`); continue; }
       if (list.some(x => x.file.name === f.name && x.file.size === f.size)) continue;   // 같은 사진을 두 번 넣지 않는다
       if (list.length + fresh.length >= MAX_N) { bad.push(`${f.name} (${MAX_N}장 초과)`); continue; }
-      fresh.push({file: f, rot: 0, small: null, url: URL.createObjectURL(f)});
+      fresh.push({file: f, rot: 0, small: null, url: URL.createObjectURL(f), name: stemOf(f.name), edited: false, read: 'todo'});
     }
     showInspProblems(bad, '아래 파일은 넣지 않았습니다.');
-    list = list.concat(fresh);
+    // 사진 순서는 올린 파일 이름 순(숫자는 숫자로). 이름을 바꿔도 순서는 그대로 둔다.
+    list = list.concat(fresh).sort((a, b) => natural(a.file.name, b.file.name));
     draw();
     for (const x of fresh) { x.small = await shrink(x.file); }
-    if (fresh.length) draw();
+    if (fresh.length) { draw(); readNames(); }
   }
   function showInspProblems(items, head){
     const el = $('#inspProblems');
@@ -732,7 +799,7 @@ $('#newUpload').onclick = () => {
     el.classList.remove('hide');
   }
   $('#inspThumbs').addEventListener('click', e => {
-    if (busy) return;
+    if (busy || reading) return;
     const r = e.target.closest('button[data-r]');
     if (r) {
       const x = list[Number(r.dataset.r)];
@@ -743,6 +810,16 @@ $('#newUpload').onclick = () => {
     const [gone] = list.splice(Number(b.dataset.i), 1);
     if (gone) URL.revokeObjectURL(gone.url);
     draw();
+  });
+  // 이름 칸을 고치면 바로 기억한다 (다시 그리지 않아야 글자를 치는 동안 커서가 유지된다)
+  $('#inspThumbs').addEventListener('input', e => {
+    const t = e.target.closest('textarea.nm'); if (!t) return;
+    const x = list[Number(t.dataset.n)];
+    if (x) { x.name = t.value.replace(/\s+/g, ' '); x.edited = true; }
+  });
+  // 이름 칸에서 Enter 는 줄바꿈 대신 입력 끝
+  $('#inspThumbs').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && e.target.closest('textarea.nm')) { e.preventDefault(); e.target.blur(); }
   });
   $('#inspPick').addEventListener('change', e => { add(Array.from(e.target.files || [])); e.target.value = ''; });
   const zone = $('#inspDrop');
@@ -761,22 +838,30 @@ $('#newUpload').onclick = () => {
   });
   $('#inspClear').onclick = () => { list.forEach(x => URL.revokeObjectURL(x.url)); list = []; showInspProblems([], ''); draw(); };
 
+  // 이름을 처음부터 다시 읽는다 (직접 고친 이름도 새로 덮어쓰므로 먼저 물어본다)
+  $('#inspRead').onclick = () => {
+    if (busy || reading || !list.length) return;
+    if (list.some(x => x.edited) && !confirm('직접 고친 이름도 AI가 읽은 이름으로 바뀝니다. 다시 읽을까요?')) return;
+    list.forEach(x => { x.edited = false; x.read = 'todo'; x.name = stemOf(x.file.name); });
+    readNames();
+  };
+
   // AI 가 사진마다 똑바로 선 방향을 골라 준다. 결과는 미리보기에 바로 보이고, 틀리면 ↺ ↻ 로 고치면 된다.
   $('#inspAuto').onclick = async () => {
-    if (busy || !list.length) return;
+    if (busy || reading || !list.length) return;
     busy = true; draw();
     const btn = $('#inspAuto'), old = btn.textContent;
     btn.textContent = `방향 살펴보는 중… 0/${list.length}`;
     try {
       const items = list.slice();
       // 8장씩 나눠 보낸다 (한 요청이 너무 길어지지 않게, 진행 상황도 보이게)
-      const CHUNK = 8, rots = new Array(items.length).fill(null);
+      const rots = new Array(items.length).fill(null);
       let done = 0, errMsg = '';
       for (let s = 0; s < items.length; s += CHUNK) {
         const part = items.slice(s, s + CHUNK), fd = new FormData();
         for (const x of part) {
           if (!x.small) x.small = await shrink(x.file);
-          const blob = x.small ? await new Promise(r => x.small.toBlob(r, 'image/jpeg', 0.85)) : x.file;
+          const blob = x.small ? await toBlob(x.small) : x.file;
           fd.append('files', blob, x.file.name);
         }
         const r = await fetch('/api/inspection/orient', {method: 'POST', body: fd});
@@ -799,49 +884,45 @@ $('#newUpload').onclick = () => {
     } catch (e) {
       $('#inspMsg').textContent = '연결에 실패했습니다. 사진 아래 ↺ ↻ 버튼으로 직접 돌려 주세요.';
     } finally {
-      busy = false; btn.textContent = old;
-      ['#inspGo', '#inspGoWord', '#inspClear', '#inspAuto'].forEach(s => { $(s).disabled = !list.length; });
+      busy = false; btn.textContent = old; refreshButtons();
     }
   };
 
-  async function make(kind){
-    if (busy || !list.length) return;
-    const btn = kind === 'xlsx' ? $('#inspGo') : $('#inspGoWord'), old = btn.textContent;
-    busy = true;
-    ['#inspGo', '#inspGoWord', '#inspAuto'].forEach(s => { $(s).disabled = true; });
-    btn.textContent = '만드는 중… (잠시만요)';
+  // 서버가 만들어 준 파일(검수서 엑셀·워드, 사진 zip)을 내려받는다
+  async function fetchAndSave(url, btn, busyText, fallbackName, doneText){
+    if (busy || reading || !list.length) return;
+    const old = btn.textContent;
+    busy = true; refreshButtons(); btn.textContent = busyText;
     const fd = new FormData();
-    list.forEach(x => fd.append('files', x.file, x.file.name));
+    list.forEach(x => fd.append('files', x.file, uploadName(x)));
     fd.append('rotations', JSON.stringify(list.map(x => x.rot)));
     fd.append('date', $('#inspDate').value || '');
-    fd.append('kind', kind);
+    if (url.endsWith('/inspection')) fd.append('kind', fallbackName.endsWith('.docx') ? 'docx' : 'xlsx');
     try {
-      const r = await fetch('/api/inspection', {method: 'POST', body: fd});
+      const r = await fetch(url, {method: 'POST', body: fd});
       if (r.status === 401) { $('#inspMsg').textContent = '접속 확인이 필요합니다. 새로고침 후 다시 로그인해 주세요.'; return; }
-      if (!r.ok) { const j = await r.json().catch(() => ({})); $('#inspMsg').textContent = j.detail || '검수서를 만들지 못했습니다. 잠시 뒤 다시 시도해 주세요.'; return; }
+      if (!r.ok) { const j = await r.json().catch(() => ({})); $('#inspMsg').textContent = j.detail || '파일을 만들지 못했습니다. 잠시 뒤 다시 시도해 주세요.'; return; }
       let skipped = [];
       try { skipped = JSON.parse(decodeURIComponent(r.headers.get('X-Insp-Skipped') || '%5B%5D')); } catch (e) {}
       const cd = r.headers.get('Content-Disposition') || '';
       const m = cd.match(/filename\*=UTF-8''([^;]+)/i);
-      const d = $('#inspDate').value;
-      const fallback = '원산지 표시_' + (d ? d.slice(2).replace(/-/g, '.') : '') + '.' + kind;
       const blob = await r.blob(), a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = m ? decodeURIComponent(m[1]) : fallback;
+      a.download = m ? decodeURIComponent(m[1]) : fallbackName;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-      $('#inspMsg').textContent = `만들었습니다. 사진 ${r.headers.get('X-Insp-Count') || list.length}장이 들어갔습니다.`;
-      showInspProblems(skipped, '아래 사진은 열 수 없어 검수서에 넣지 못했습니다.');
+      $('#inspMsg').textContent = `${doneText} 사진 ${r.headers.get('X-Insp-Count') || list.length}장이 들어갔습니다.`;
+      showInspProblems(skipped, '아래 사진은 열 수 없어 넣지 못했습니다.');
     } catch (e) {
       $('#inspMsg').textContent = '연결에 실패했습니다. 잠시 뒤 다시 시도해 주세요.';
     } finally {
-      busy = false;
-      btn.textContent = old;
-      ['#inspGo', '#inspGoWord', '#inspClear', '#inspAuto'].forEach(s => { $(s).disabled = !list.length; });
+      busy = false; btn.textContent = old; refreshButtons();
     }
   }
-  $('#inspGo').onclick = () => make('xlsx');
-  $('#inspGoWord').onclick = () => make('docx');
+  const stampOf = () => { const d = $('#inspDate').value; return d ? d.slice(2).replace(/-/g, '.') : ''; };
+  $('#inspGo').onclick = () => fetchAndSave('/api/inspection', $('#inspGo'), '만드는 중… (잠시만요)', `원산지 표시_${stampOf()}.xlsx`, '만들었습니다.');
+  $('#inspGoWord').onclick = () => fetchAndSave('/api/inspection', $('#inspGoWord'), '만드는 중… (잠시만요)', `원산지 표시_${stampOf()}.docx`, '만들었습니다.');
+  $('#inspZip').onclick = () => fetchAndSave('/api/inspection/zip', $('#inspZip'), '묶는 중… (잠시만요)', `원산지 표시 사진_${stampOf()}.zip`, '내려받았습니다.');
 })();
 
 // 새로고침해도 마지막 작업을 이어서 보여 준다. 없는 작업은 진행 화면에 가두지 않는다.
