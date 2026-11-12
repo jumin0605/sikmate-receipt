@@ -43,7 +43,8 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from env_config import load_project_env
-from inspection import INSP_ALLOWED_EXT, build_inspection, detect_rotation, norm_rotation
+from inspection import (INSP_ALLOWED_EXT, build_inspection, detect_rotation, inspection_date_stamp,
+                        norm_rotation, photos_zip, read_label)
 from job_resume import classify_on_restart, clear_derived_outputs
 
 HERE = Path(__file__).resolve().parent
@@ -991,7 +992,9 @@ def make_inspection_sheet(files: list[UploadFile] = File(...), date: str = Form(
             uploads.append((name, data, norm_rotation(rots[i] if i < len(rots) else 0)))
         with _insp_lock:
             try:
-                out, nice, skipped, count = build_inspection(core, uploads, tmp, date_text=date, kind=kind)
+                # 화면에 보이는 순서 그대로 놓는다 (이름을 바꿔도 순서가 섞이지 않게)
+                out, nice, skipped, count = build_inspection(core, uploads, tmp, date_text=date, kind=kind,
+                                                             sort=False)
             except ValueError as e:
                 msg = str(e) if uploads else "검수서에 넣을 수 있는 사진이 없습니다. " + ", ".join(too_big)
                 raise HTTPException(400, msg[:300])
@@ -1007,6 +1010,98 @@ def make_inspection_sheet(files: list[UploadFile] = File(...), date: str = Form(
     return FileResponse(out, filename=nice, media_type=media,
                         headers={"X-Insp-Count": str(count),
                                  "X-Insp-Skipped": quote(json.dumps(skipped, ensure_ascii=False))},
+                        background=BackgroundTask(shutil.rmtree, tmp, True))
+
+
+_light_models: dict = {}
+
+
+def _light_model(client, kind: str, env_name: str) -> str:
+    """사진 방향·글자 읽기처럼 영수증 판독보다 가벼운 일에 쓸 모델. 환경변수로 따로 지정할 수 있고, 비우면 영수증 판독 모델을 쓴다."""
+    if kind not in _light_models:
+        want = os.environ.get(env_name, "").strip() or MODEL
+        _light_models[kind] = core.json_resolve_model(client, want, log=lambda m: print(m, flush=True))
+        print(f"[{kind}] 쓸 모델: {_light_models[kind]}", flush=True)
+    return _light_models[kind]
+
+
+@app.post("/api/inspection/read")
+def read_photos(files: list[UploadFile] = File(...), rc_auth: str | None = Cookie(default=None)):
+    """원산지 표시 사진을 읽어 사진마다 {product, origin, date, name} 을 돌려준다.
+
+    name 은 '참치 통조림 26.11.09 러시아산'. 날짜는 올린 파일 이름에서 가져온다.
+    못 읽은 사진은 항목이 null 이라 화면이 원래 이름을 그대로 둔다.
+    """
+    _check_auth(rc_auth)
+    if not os.environ.get("GEMINI_API_KEY"):
+        raise HTTPException(500, "서버에 판독 키가 설정되어 있지 않습니다.")
+    if not files or len(files) > MAX_INSP_FILES:
+        raise HTTPException(400, f"사진은 1~{MAX_INSP_FILES}장까지 보낼 수 있습니다.")
+    if files_today() + len(files) > DAILY_FILE_LIMIT:
+        raise HTTPException(429, "오늘 처리 가능한 양을 넘었습니다. 사진 아래 이름 칸에 직접 적어 주세요.")
+    items = [(Path(_decode_filename(uf.filename or "")).name, uf.file.read(3 * 1024 * 1024 + 1)) for uf in files]
+    try:
+        client = core.json_client()
+        model = _light_model(client, "읽기", "GEMINI_READ_MODEL")
+    except Exception as e:  # noqa: BLE001
+        admin_note("read", f"사진 읽기 준비 실패: {e}")
+        raise HTTPException(503, "자동 이름 붙이기를 지금 쓸 수 없습니다. 사진 아래 이름 칸에 직접 적어 주세요.")
+
+    def one(item):
+        name, data = item
+        if len(data) > 3 * 1024 * 1024:
+            return None
+        try:
+            return read_label(core, client, model, data, name)
+        except Exception as e:  # noqa: BLE001
+            admin_note("read", f"사진 읽기 실패: {str(e)[:120]}")
+            return None
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        out = list(ex.map(one, items))
+    return {"items": out}
+
+
+@app.post("/api/inspection/zip")
+def inspection_photos_zip(files: list[UploadFile] = File(...), rotations: str = Form(""),
+                          date: str = Form(""), rc_auth: str | None = Cookie(default=None)):
+    """이름을 붙인 원산지 사진을 한 zip 으로 내려 준다. 파일 이름이 곧 사진 이름이다."""
+    _check_auth(rc_auth)
+    try:
+        rots = json.loads(rotations) if rotations else []
+    except ValueError:
+        rots = []
+    if not isinstance(rots, list):
+        rots = []
+    if not files:
+        raise HTTPException(400, "원산지 표시 사진을 선택해 주세요.")
+    if len(files) > MAX_INSP_FILES:
+        raise HTTPException(400, f"한 번에 {MAX_INSP_FILES}장까지 다운받을 수 있습니다.")
+    base = DATA_DIR / "insp"
+    base.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(dir=base))
+    try:
+        uploads, bad = [], []
+        for i, uf in enumerate(files):
+            name = Path(_decode_filename(uf.filename or "")).name
+            data = uf.file.read(MAX_FILE_MB * 1024 * 1024 + 1)
+            if len(data) > MAX_FILE_MB * 1024 * 1024:
+                bad.append(f"{name} ({MAX_FILE_MB}MB 초과)")
+                continue
+            uploads.append((name, data, norm_rotation(rots[i] if i < len(rots) else 0)))
+        with _insp_lock:
+            n, skipped = photos_zip(uploads, tmp / "photos.zip")
+        if not n:
+            raise HTTPException(400, "다운받을 수 있는 사진이 없습니다. " + ", ".join(bad + skipped))
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    from urllib.parse import quote
+    return FileResponse(tmp / "photos.zip", filename=f"원산지 표시 사진_{inspection_date_stamp(date)}.zip",
+                        media_type="application/zip",
+                        headers={"X-Insp-Count": str(n),
+                                 "X-Insp-Skipped": quote(json.dumps(bad + skipped, ensure_ascii=False))},
                         background=BackgroundTask(shutil.rmtree, tmp, True))
 
 
@@ -1030,16 +1125,7 @@ def orient_photos(files: list[UploadFile] = File(...), rc_auth: str | None = Coo
     datas = [uf.file.read(3 * 1024 * 1024 + 1) for uf in files]
     try:
         client = core.json_client()
-        if "model" not in _orient_model:
-            # 방향 고르기는 쉬운 일이라 더 가벼운(빠른) 모델을 따로 지정할 수 있다. 비우면 영수증 판독 모델을 쓴다.
-            want = os.environ.get("GEMINI_ORIENT_MODEL", "").strip() or MODEL
-            _orient_model["model"] = core.json_resolve_model(client, want, log=lambda m: print(m, flush=True))
-            try:
-                names = [m.name for m in client.models.list() if "flash" in (m.name or "")]
-                print(f"[방향] 쓸 모델: {_orient_model['model']} / 쓸 수 있는 flash 모델: {names[:20]}", flush=True)
-            except Exception:  # noqa: BLE001
-                pass
-        model = _orient_model["model"]
+        model = _light_model(client, "방향", "GEMINI_ORIENT_MODEL")
     except Exception as e:  # noqa: BLE001
         admin_note("orient", f"방향 판단 준비 실패: {e}")
         raise HTTPException(503, "자동 방향 맞추기를 지금 쓸 수 없습니다. 사진 옆 ↻ 버튼으로 직접 돌려 주세요.")

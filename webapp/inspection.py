@@ -59,6 +59,11 @@ def title_and_filename(d: date | None, today: date | None = None) -> tuple[str, 
     return title, f"원산지 표시_{stamp}"
 
 
+def inspection_date_stamp(date_text: str, today: date | None = None) -> str:
+    """파일 이름에 붙일 'YY.MM.DD'. 날짜를 못 읽으면 오늘."""
+    return (parse_date(date_text) or today or date.today()).strftime("%y.%m.%d")
+
+
 def norm_rotation(v) -> int:
     """사용자가 고른 회전(시계 방향, 도). 0/90/180/270 이 아니면 0."""
     try:
@@ -109,7 +114,7 @@ def unique_stem(stem: str, used: set) -> str:
 
 
 def build_inspection(core, uploads, workdir: Path, date_text: str = "", kind: str = "xlsx",
-                     log=lambda m: None):
+                     log=lambda m: None, sort: bool = True):
     """uploads: [(원래 파일 이름, bytes[, 시계 방향 회전 도])].
     만든 파일 경로, 받을 때 이름, 건너뛴 파일 목록, 넣은 사진 수를 돌려준다.
 
@@ -120,7 +125,8 @@ def build_inspection(core, uploads, workdir: Path, date_text: str = "", kind: st
     pics = workdir / "사진"
     pics.mkdir(parents=True, exist_ok=True)
     used, images, skipped = set(), [], []
-    for up in sorted(uploads, key=lambda u: natural_key(Path(u[0] or "").name)):
+    ordered = sorted(uploads, key=lambda u: natural_key(Path(u[0] or "").name)) if sort else list(uploads)
+    for up in ordered:
         name, data = up[0], up[1]
         rot = up[2] if len(up) > 2 else 0
         base = Path(name or "").name
@@ -200,6 +206,11 @@ _think_ok: dict = {}
 
 
 def _ask_orientation(client, model, png: bytes) -> dict:
+    return _ask_json(client, model, png, "image/png", ORIENT_PROMPT, ORIENT_SCHEMA, "방향")
+
+
+def _ask_json(client, model, data: bytes, mime: str, prompt: str, schema: dict, tag: str) -> dict:
+    """사진 한 장 + 질문을 보내 JSON 답을 받는다. 생각(thinking)을 최소로 줄여 빠르게 묻는다."""
     import json
     from google.genai import types
     start = _think_ok.get(model, 0)
@@ -209,7 +220,7 @@ def _ask_orientation(client, model, png: bytes) -> dict:
         try:
             extra = {"thinking_config": types.ThinkingConfig(**opt)} if opt else {}
             cfg = types.GenerateContentConfig(response_mime_type="application/json",
-                                              response_schema=ORIENT_SCHEMA, temperature=0, **extra)
+                                              response_schema=schema, temperature=0, **extra)
         except Exception as e:  # noqa: BLE001  설치된 라이브러리가 그 설정을 모름
             last = e
             continue
@@ -217,8 +228,8 @@ def _ask_orientation(client, model, png: bytes) -> dict:
             t0 = time.time()
             resp = client.models.generate_content(
                 model=model, config=cfg,
-                contents=[types.Part.from_bytes(data=png, mime_type="image/png"), ORIENT_PROMPT])
-            print(f"[방향] {model} {opt} {time.time() - t0:.1f}초", flush=True)
+                contents=[types.Part.from_bytes(data=data, mime_type=mime), prompt])
+            print(f"[{tag}] {model} {opt} {time.time() - t0:.1f}초", flush=True)
         except Exception as e:  # noqa: BLE001
             msg = str(e).lower()
             if opt and ("think" in msg or "invalid" in msg or "400" in msg):
@@ -227,7 +238,7 @@ def _ask_orientation(client, model, png: bytes) -> dict:
             raise
         _think_ok[model] = i
         return json.loads(resp.text)
-    raise RuntimeError(f"방향 판단 호출 실패: {last}")
+    raise RuntimeError(f"{tag} 판단 호출 실패: {last}")
 
 
 def detect_rotation(core, client, model, data: bytes) -> int:
@@ -244,3 +255,120 @@ def detect_rotation(core, client, model, data: bytes) -> int:
         return 0
     letter = str((ans or {}).get("upright", "A")).strip().upper()[:1]
     return ROTATIONS[ORIENT_LETTERS.index(letter)] if letter in ORIENT_LETTERS else 0
+
+
+# ---------------------------------------------------------------------------
+# 사진 내용 읽기 -> 파일 이름 자동 만들기
+#
+# 원산지 표시 사진에서 품명과 원산지를 읽어 '참치 통조림 26.11.09 러시아산' 같은 이름을 만든다.
+# 날짜는 파일 이름에서 가져온다 (카카오톡 사진 KakaoTalk_20261109_135452116 -> 26.11.09).
+# 사진 속 날짜는 유통기한·제조일일 수 있어 날짜로 쓰지 않는다.
+# ---------------------------------------------------------------------------
+READ_PROMPT = (
+    "이 사진은 식자재를 납품받을 때 찍은 포장지 또는 원산지 표시 사진입니다. 글자를 읽어 알려 주세요.\n"
+    "- product: 식자재의 짧은 일반 이름 (예: '참치 통조림', '돼지고기 앞다리', '배추김치', '계란'). "
+    "상표·회사 이름, 용량, 규격, 등급은 빼세요. 읽을 수 없거나 식자재가 아니면 null.\n"
+    "- origin: 원산지를 '나라 이름+산' 한 가지로 (예: '국내산', '러시아산', '중국산', '미국산', '노르웨이산'). "
+    "원료가 여러 나라면 맨 앞에 적힌(가장 많은) 원료의 원산지 하나만. '국산'은 '국내산'으로. "
+    "원산지가 보이지 않으면 null. 짐작해서 적지 마세요.\n"
+    "글자가 거의 보이지 않으면 둘 다 null 로 하세요."
+)
+READ_SCHEMA = {"type": "object", "required": ["product", "origin"],
+               "properties": {"product": {"type": "string", "nullable": True},
+                              "origin": {"type": "string", "nullable": True}}}
+_BAD_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def date_from_name(name: str) -> str | None:
+    """파일 이름에서 날짜를 찾아 'YY.MM.DD' 로. 못 찾으면 None.
+    KakaoTalk_20261109_135452116 / 20261109 / 2026-11-09 / 26.11.09 / 2026.11.09 을 알아본다."""
+    stem = Path(name or "").stem if re.search(r"\.[A-Za-z0-9]{2,5}$", name or "") else (name or "")
+
+    def ok(y, m, d):
+        try:
+            return datetime(y, m, d).strftime("%y.%m.%d")
+        except ValueError:
+            return None
+    m = re.search(r"(?<!\d)(20\d{2})[-._]?(\d{2})[-._]?(\d{2})(?!\d{3,})", stem)
+    if m:
+        got = ok(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        if got:
+            return got
+    m = re.match(r"^(\d{2})\.(\d{1,2})\.(\d{1,2})(?!\d)", stem)
+    if m:
+        return ok(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return None
+
+
+def normalize_origin(v) -> str | None:
+    """'러시아' -> '러시아산', '국산'/'한국산'/'대한민국' -> '국내산'. 비면 None."""
+    v = _BAD_NAME_CHARS.sub("", str(v or "")).strip()
+    if not v or v.lower() in ("null", "none", "unknown"):
+        return None
+    v = re.sub(r"^원산지\s*[:：]?\s*", "", v)
+    if v in ("국산", "한국산", "한국", "대한민국", "대한민국산", "국내", "국내산"):
+        return "국내산"
+    if "산" not in v[-2:] and not v.endswith("산"):
+        v += "산"
+    return v[:20]
+
+
+def clean_product(v) -> str | None:
+    v = re.sub(r"\s+", " ", _BAD_NAME_CHARS.sub("", str(v or ""))).strip(" .")
+    if not v or v.lower() in ("null", "none"):
+        return None
+    return v[:30]
+
+
+def compose_name(product, date_str, origin) -> str | None:
+    """'참치 통조림 26.11.09 러시아산'. 품명을 읽지 못했으면 None (원래 이름을 그대로 쓰게)."""
+    product = clean_product(product)
+    if not product:
+        return None
+    return " ".join(p for p in (product, date_str, normalize_origin(origin)) if p)
+
+
+def read_label(core, client, model, data: bytes, filename: str = "") -> dict:
+    """사진 한 장을 읽어 {'product', 'origin', 'date', 'name'} 을 돌려준다. name 은 못 읽으면 None."""
+    jpg = io.BytesIO()
+    open_upright(data).save(jpg, "JPEG", quality=88)
+    jpg = jpg.getvalue()
+    if hasattr(core, "json_client"):
+        try:
+            ans = _ask_json(client, model, jpg, "image/jpeg", READ_PROMPT, READ_SCHEMA, "읽기")
+        except Exception:  # noqa: BLE001  한 번 더, 기존 도구의 호출(재시도 포함)로
+            ans = core.json_ask(client, jpg, model, schema=READ_SCHEMA, prompt=READ_PROMPT)
+    else:                                     # 시험용 가짜 core
+        ans = core.json_ask(client, jpg, model, schema=READ_SCHEMA, prompt=READ_PROMPT)
+    ans = ans or {}
+    d = date_from_name(filename)
+    return {"product": clean_product(ans.get("product")), "origin": normalize_origin(ans.get("origin")),
+            "date": d, "name": compose_name(ans.get("product"), d, ans.get("origin"))}
+
+
+def photos_zip(uploads, zip_path: Path, max_side: int = 3000) -> tuple[int, list]:
+    """[(파일 이름, bytes, 회전 도)] 를 이름 그대로(확장자는 .jpg) 한 zip 으로 묶는다. 돌린 방향도 반영한다.
+    같은 이름은 _2, _3 을 붙인다. (넣은 장수, 못 연 파일 목록)"""
+    import zipfile
+    used, skipped, n = set(), [], 0
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as z:     # 사진은 이미 압축돼 있다
+        for up in uploads:
+            name, data = up[0], up[1]
+            rot = up[2] if len(up) > 2 else 0
+            base = Path(name or "").name
+            if Path(base).suffix.lower() not in INSP_ALLOWED_EXT:
+                skipped.append(f"{base} (지원하지 않는 형식)")
+                continue
+            try:
+                im = open_upright(data)
+                im.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+                im = rotate_cw(im, rot)
+                buf = io.BytesIO()
+                im.save(buf, "JPEG", quality=92)
+            except Exception:  # noqa: BLE001
+                skipped.append(f"{base} (사진을 열 수 없음)")
+                continue
+            stem = unique_stem(clean_stem(base), used)
+            z.writestr(f"{stem}.jpg", buf.getvalue())
+            n += 1
+    return n, skipped

@@ -153,15 +153,98 @@ class Orientation(unittest.TestCase):
         self.assertEqual(got, [0, 90, 180, 270, 0])
 
 
+class AutoName(unittest.TestCase):
+    def test_date_from_name(self):
+        f = insp.date_from_name
+        self.assertEqual(f("KakaoTalk_20261109_135452116.jpg"), "26.11.09")
+        self.assertEqual(f("KakaoTalk_20261109_173713784_03.jpg"), "26.11.09")
+        self.assertEqual(f("20261109.jpg"), "26.11.09")
+        self.assertEqual(f("2026-11-09 참치.png"), "26.11.09")
+        self.assertEqual(f("26.11.09 참치.jpg"), "26.11.09")
+        self.assertEqual(f("26.11.09_2.jpg"), "26.11.09")
+        self.assertIsNone(f("IMG_0042.jpg"))
+        self.assertIsNone(f("20261399.jpg"))        # 13월 99일
+        self.assertIsNone(f(""))
+
+    def test_normalize_origin(self):
+        n = insp.normalize_origin
+        self.assertEqual([n(v) for v in ("러시아", "러시아산", "국산", "한국산", "대한민국", "원산지: 중국", " 미국 ")],
+                         ["러시아산", "러시아산", "국내산", "국내산", "국내산", "중국산", "미국산"])
+        self.assertIsNone(n(None))
+        self.assertIsNone(n(""))
+        self.assertIsNone(n("null"))
+
+    def test_compose_name(self):
+        c = insp.compose_name
+        self.assertEqual(c("참치 통조림", "26.11.09", "러시아"), "참치 통조림 26.11.09 러시아산")
+        self.assertEqual(c("두부", None, "국산"), "두부 국내산")
+        self.assertEqual(c("두부", "26.11.09", None), "두부 26.11.09")
+        self.assertEqual(c("돼지/고기:*", "26.11.09", "국내산"), "돼지고기 26.11.09 국내산")
+        self.assertIsNone(c(None, "26.11.09", "국내산"))      # 품명을 못 읽으면 이름을 바꾸지 않는다
+        self.assertIsNone(c("null", "26.11.09", "국내산"))
+
+    def test_read_label_with_fake_ai(self):
+        class FakeCore:
+            def json_ask(self, client, png, model, schema=None, prompt=None):
+                self.png = png
+                return {"product": "참치 통조림", "origin": "러시아"}
+        fc = FakeCore()
+        got = insp.read_label(fc, None, "m", jpeg(300, 200), "KakaoTalk_20261109_135452116.jpg")
+        self.assertEqual(got["name"], "참치 통조림 26.11.09 러시아산")
+        self.assertEqual((got["date"], got["origin"]), ("26.11.09", "러시아산"))
+        self.assertTrue(fc.png.startswith(b"\xff\xd8"))       # JPEG 로 보낸다
+
+    def test_read_label_unreadable(self):
+        class FakeCore:
+            def json_ask(self, *a, **k):
+                return {"product": None, "origin": None}
+        got = insp.read_label(FakeCore(), None, "m", jpeg(), "a.jpg")
+        self.assertIsNone(got["name"])
+
+    def test_renamed_photos_keep_order_and_names_in_excel(self):
+        from openpyxl import load_workbook
+        core = load_core()
+        ups = [("참치 통조림 26.11.09 러시아산.jpg", jpeg()), ("가지 26.11.09 국내산.jpg", jpeg())]
+        with tempfile.TemporaryDirectory() as d:
+            out, *_ = insp.build_inspection(core, ups, Path(d), "2026-11-12", sort=False)
+            ws = load_workbook(out).active
+            # 점(26.11.09)이 들어 있어도 이름이 잘리지 않고, 화면 순서대로 놓인다
+            self.assertEqual([ws.cell(3, 1).value, ws.cell(3, 2).value],
+                             ["참치 통조림 26.11.09 러시아산", "가지 26.11.09 국내산"])
+
+    def test_photos_zip(self):
+        import zipfile
+        ups = [("참치 26.11.09 러시아산.jpg", jpeg(800, 400), 90), ("참치 26.11.09 러시아산.png", jpeg(), 0),
+               ("문서.pdf", b"%PDF"), ("깨짐.jpg", b"nope")]
+        with tempfile.TemporaryDirectory() as d:
+            n, skipped = insp.photos_zip(ups, Path(d) / "p.zip")
+            self.assertEqual(n, 2)
+            self.assertEqual(len(skipped), 2)
+            with zipfile.ZipFile(Path(d) / "p.zip") as z:
+                self.assertEqual(sorted(z.namelist()), ["참치 26.11.09 러시아산.jpg", "참치 26.11.09 러시아산_2.jpg"])
+                with Image.open(io.BytesIO(z.read("참치 26.11.09 러시아산.jpg"))) as im:
+                    self.assertEqual(im.size, (400, 800))      # 90도 돌린 방향이 반영됐다
+
+    def test_date_stamp(self):
+        self.assertEqual(insp.inspection_date_stamp("2026-11-12"), "26.11.12")
+        self.assertEqual(insp.inspection_date_stamp("", today=date(2026, 1, 2)), "26.01.02")
+
+
 class Wiring(unittest.TestCase):
     def test_app_and_page_are_connected(self):
         app = (ROOT / "app.py").read_text(encoding="utf-8")
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('@app.post("/api/inspection")', app)
         self.assertIn("build_inspection(core", app)
-        self.assertIn("fetch('/api/inspection'", html)
+        self.assertIn("fetchAndSave('/api/inspection'", html)
         self.assertIn('id="insp"', html)
         self.assertIn('@app.post("/api/inspection/orient")', app)
+        self.assertIn('@app.post("/api/inspection/read")', app)
+        self.assertIn('@app.post("/api/inspection/zip")', app)
+        self.assertIn("fetch('/api/inspection/read'", html)
+        self.assertIn("'/api/inspection/zip'", html)
+        self.assertIn('id="inspRead"', html)
+        self.assertIn('id="inspZip"', html)
         self.assertIn("fetch('/api/inspection/orient'", html)
         self.assertIn("fd.append('rotations'", html)
         self.assertIn(">목록 비우기<", html)
