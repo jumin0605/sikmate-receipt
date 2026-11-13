@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import time
 from datetime import date, datetime, timedelta
@@ -209,7 +210,21 @@ def _ask_orientation(client, model, png: bytes) -> dict:
     return _ask_json(client, model, png, "image/png", ORIENT_PROMPT, ORIENT_SCHEMA, "방향")
 
 
-def _ask_json(client, model, data: bytes, mime: str, prompt: str, schema: dict, tag: str) -> dict:
+def _contents(types, data: bytes, mime: str, prompt: str, examples=None) -> list:
+    """AI 에 보낼 내용. examples 가 있으면 '정답을 알려 주는 예시 사진'을 먼저 보여 준다(few-shot)."""
+    out = []
+    for n, (ex_bytes, ex_answer) in enumerate(examples or [], 1):
+        out += [f"[참고 예시 {n}] 다음 사진의 정답입니다.",
+                types.Part.from_bytes(data=ex_bytes, mime_type="image/jpeg"),
+                "정답: " + json.dumps(ex_answer, ensure_ascii=False)]
+    if out:
+        out.append("[지금 읽을 사진] 위 예시와 같은 종류의 포장이면 품명·원산지를 예시와 같은 방식으로 답하되, "
+                   "날짜·글자는 이 사진에서 직접 읽으세요. 예시의 날짜를 그대로 쓰지 마세요.")
+    return out + [types.Part.from_bytes(data=data, mime_type=mime), prompt]
+
+
+def _ask_json(client, model, data: bytes, mime: str, prompt: str, schema: dict, tag: str,
+              examples=None) -> dict:
     """사진 한 장 + 질문을 보내 JSON 답을 받는다. 생각(thinking)을 최소로 줄여 빠르게 묻는다."""
     import json
     from google.genai import types
@@ -228,7 +243,7 @@ def _ask_json(client, model, data: bytes, mime: str, prompt: str, schema: dict, 
             t0 = time.time()
             resp = client.models.generate_content(
                 model=model, config=cfg,
-                contents=[types.Part.from_bytes(data=data, mime_type=mime), prompt])
+                contents=_contents(types, data, mime, prompt, examples))
             print(f"[{tag}] {model} {opt} {time.time() - t0:.1f}초", flush=True)
         except Exception as e:  # noqa: BLE001
             msg = str(e).lower()
@@ -278,17 +293,48 @@ READ_PROMPT = (
     "- expiry_date: '유통기한', '소비기한', '품질유지기한' 뒤에 날짜가 직접 적혀 있을 때만, YYYY-MM-DD. 없으면 null.\n"
     "- shelf_months: '제조일로부터 24개월', '포장일로부터 18개월까지', '기준일로부터 12개월' 처럼 기준일에서 몇 개월인지 적혀 있을 때 그 개월 수(숫자). "
     "'일'이나 년 단위면 개월로 바꿔서(1년=12). 없으면 null.\n"
+    "- all_dates: 사진에 인쇄된 날짜를 모두 YYYY-MM-DD 로(바코드·로트 번호는 제외). 없으면 빈 배열.\n"
+    "날짜가 두 개 이상 나란히 있고 이름표가 안 보이면, 이른 날짜는 제조·포장일이고 늦은 날짜가 유통기한입니다. "
+    "사진이 옆으로 누웠거나 뒤집혀 있어도 글자를 돌려서 읽으세요.\n"
+    "알려진 포장: 노랑·주황색 비닐 봉지에 닭 그림이 있고 빨간 둥근 도장에 'BRASIL' 또는 'SIF' 가 인쇄된 냉동 닭고기는 "
+    "product '닭고기', origin '브라질'. 'BRASIL'/'BRAZIL'/'SIF' 검사 도장이 보이면 origin 은 브라질입니다. "
+    "영문 포장이라도 닭(FRANGO/CHICKEN)이면 product 는 닭고기입니다(부위가 보이면 '닭가슴살'처럼).\n"
     "- fresh_vegetable: 신선 채소·버섯·나물(표고, 대파, 무, 양파, 브로콜리, 양배추, 오이, 느타리, 청경채, 열무 등)이면 true. "
     "김치·통조림·절임·가루·말린 것·냉동 등 가공품이거나 고기·수산물·계란·과일이면 false.\n"
     "날짜는 보이는 것만 적고 짐작하지 마세요. 글자가 거의 보이지 않으면 모두 null 로 하세요."
 )
-READ_SCHEMA = {"type": "object", "required": ["product", "origin", "base_date", "expiry_date", "shelf_months", "fresh_vegetable"],
-               "properties": {"product": {"type": "string", "nullable": True},
+READ_SCHEMA = {"type": "object", "required": ["product", "origin", "base_date", "expiry_date", "shelf_months", "fresh_vegetable", "all_dates"],
+               "properties": {"all_dates": {"type": "array", "items": {"type": "string"}},"product": {"type": "string", "nullable": True},
                               "origin": {"type": "string", "nullable": True},
                               "base_date": {"type": "string", "nullable": True},
                               "expiry_date": {"type": "string", "nullable": True},
                               "shelf_months": {"type": "integer", "nullable": True},
                               "fresh_vegetable": {"type": "boolean", "nullable": True}}}
+# 정답을 알려 주는 예시 사진(webapp/refs/). '이 모양 포장은 이렇게 읽는다'를 가르친다. 새 예시는 여기에 한 줄 추가하고 사진을 refs 에 넣으면 된다.
+# 사진은 EXIF 회전을 적용한 똑바른 방향, 긴 변 900px 이하로 둔다.
+REF_DIR = Path(__file__).resolve().parent / "refs"
+REF_EXAMPLES = (
+    ("chicken_brazil.jpg", {"product": "닭고기", "origin": "브라질", "base_date": "2025-11-28",
+                            "expiry_date": "2027-11-28", "shelf_months": None, "fresh_vegetable": False,
+                            "all_dates": ["2025-11-28", "2027-11-28"]}),
+)
+_examples_cache: list | None = None
+
+
+def load_examples() -> list:
+    """[(사진 bytes, 정답 dict)]. 파일이 없으면 그 예시는 건너뛴다."""
+    global _examples_cache
+    if _examples_cache is None:
+        out = []
+        for name, answer in REF_EXAMPLES:
+            try:
+                out.append(((REF_DIR / name).read_bytes(), answer))
+            except OSError:
+                continue
+        _examples_cache = out
+    return _examples_cache
+
+
 _BAD_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
@@ -343,6 +389,10 @@ def pick_date(ans: dict, filename: str = "") -> tuple[str | None, str]:
     """사진에서 읽은 날짜로 이름에 넣을 날짜('YY.MM.DD')와 그 출처 설명을 고른다.
     유통기한 날짜 > 기준일+개월 > 기준일 > 파일 이름의 날짜."""
     base, exp = parse_iso(ans.get("base_date")), parse_iso(ans.get("expiry_date"))
+    found = sorted({d for d in (parse_iso(v) for v in (ans.get("all_dates") or []) if isinstance(v, str)) if d})
+    if len(found) >= 2:           # 날짜가 두 개 이상 인쇄돼 있으면 가장 늦은 날짜가 유통기한, 이른 날짜가 제조·포장일
+        exp = found[-1]
+        base = base if (base and base < exp) else found[0]
     try:
         months = int(ans.get("shelf_months")) if ans.get("shelf_months") is not None else None
     except (TypeError, ValueError):
@@ -441,7 +491,8 @@ def read_label(core, client, model, data: bytes, filename: str = "") -> dict:
     jpg = jpg.getvalue()
     if hasattr(core, "json_client"):
         try:
-            ans = _ask_json(client, model, jpg, "image/jpeg", READ_PROMPT, READ_SCHEMA, "읽기")
+            ans = _ask_json(client, model, jpg, "image/jpeg", READ_PROMPT, READ_SCHEMA, "읽기",
+                            examples=load_examples())
         except Exception:  # noqa: BLE001  한 번 더, 기존 도구의 호출(재시도 포함)로
             ans = core.json_ask(client, jpg, model, schema=READ_SCHEMA, prompt=READ_PROMPT)
     else:                                     # 시험용 가짜 core

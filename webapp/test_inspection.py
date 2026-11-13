@@ -318,6 +318,47 @@ class AutoName(unittest.TestCase):
         self.assertEqual(got["name"], "돼지고기 앞다리 26.11.09")
         self.assertEqual(got["origin_note"], "")
 
+    def test_two_dates_later_is_expiry(self):
+        pk = insp.pick_date
+        # 날짜 두 개(이름표 없음): 늦은 날짜가 유통기한. AI 가 이른 날짜를 유통기한이라 해도 바로잡는다
+        self.assertEqual(pk({"all_dates": ["2025-11-28", "2027-11-28"]}, "x.jpg")[0], "27.11.28")
+        self.assertEqual(pk({"expiry_date": "2025-11-28", "all_dates": ["2027-11-28", "2025-11-28"]}, "x.jpg")[0], "27.11.28")
+        self.assertEqual(pk({"base_date": "2025-11-28", "all_dates": ["2025-11-28", "2027-11-28"], "shelf_months": 24}, "x.jpg")[0], "27.11.28")
+        # 날짜가 하나뿐이면 기존 규칙 그대로
+        self.assertEqual(pk({"base_date": "2026-11-13", "all_dates": ["2026-11-13"], "shelf_months": 24}, "x.jpg")[0], "28.11.13")
+        self.assertEqual(pk({"all_dates": ["쉽지않음", None, 5]}, "KakaoTalk_20261109_1.jpg")[0], "26.11.09")
+
+    def test_reference_example_for_chicken(self):
+        ex = insp.load_examples()
+        self.assertEqual(len(ex), 1)
+        data, ans = ex[0]
+        self.assertEqual((ans["product"], ans["origin"]), ("닭고기", "브라질"))
+        self.assertEqual(data[:2], b"\xff\xd8")
+        self.assertLess(len(data), 200_000)
+        with Image.open(io.BytesIO(data)) as im:
+            self.assertLessEqual(max(im.size), 900)
+        # 예시는 AI 에 정답과 함께 먼저, 읽을 사진은 마지막에 들어간다
+        class T:
+            class Part:
+                @staticmethod
+                def from_bytes(data, mime_type):
+                    return ("img", len(data))
+        c = insp._contents(T, b"target", "image/jpeg", "Q", ex)
+        self.assertEqual(c[1], ("img", len(data)))
+        self.assertIn("닭고기", c[2])
+        self.assertEqual(c[-2], ("img", 6))
+        self.assertEqual(c[-1], "Q")
+        self.assertEqual(insp._contents(T, b"t", "image/jpeg", "Q"), [("img", 1), "Q"])
+
+    def test_chicken_brazil_name(self):
+        class FakeCore:
+            def json_ask(self, *a, **k):
+                return {"product": "닭고기", "origin": "브라질", "base_date": "2025-11-28", "expiry_date": None,
+                        "all_dates": ["2025-11-28", "2027-11-28"]}
+        got = insp.read_label(FakeCore(), None, "m", jpeg(), "KakaoTalk_20261113_175723998_07.jpg")
+        self.assertEqual(got["name"], "닭고기 27.11.28 브라질산")
+        self.assertIn("유통기한", got["date_note"])
+
     def test_date_stamp(self):
         self.assertEqual(insp.inspection_date_stamp("2026-11-12"), "26.11.12")
         self.assertEqual(insp.inspection_date_stamp("", today=date(2026, 1, 2)), "26.01.02")
