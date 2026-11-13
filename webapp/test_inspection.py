@@ -276,6 +276,48 @@ class AutoName(unittest.TestCase):
         self.assertEqual(got["name"], "두부 28.11.13 국내산")      # 파일 이름의 26.11.09 보다 사진 속 날짜가 우선
         self.assertIn("24개월", got["date_note"])
 
+    def test_vegetable_names(self):
+        v = insp.is_vegetable_name
+        for name in ("표고", "대파", "무우", "무", "양파", "브로콜리", "양배추", "찰가지", "오이", "느타리", "새송이", "청경채", "치커리",
+                     "열무", "얼갈이", "아욱", "유채", "느타리버섯", "새송이버섯", "쌈채소", "깻잎", "쑥갓", "콩나물", "파"):
+            self.assertTrue(v(name), name)
+        for name in ("배추김치", "참치 통조림", "냉동 브로콜리", "건고추", "고추장", "다진 마늘", "감자칩", "돼지고기 앞다리",
+                     "계란", "두부", "말린 표고", "토마토 케첩", "참기름", "무말랭이", "무진장"):
+            self.assertFalse(v(name), name)
+        self.assertFalse(v(None))
+
+    def test_decide_origin(self):
+        d = insp.decide_origin
+        # 읽은 원산지는 채소여도 그대로 (중국산 양파는 중국산)
+        self.assertEqual(d("양파", "중국", None)[0], "중국산")
+        # 원산지를 못 읽은 채소는 국내산
+        got, note = d("대파", None, None)
+        self.assertEqual(got, "국내산")
+        self.assertIn("채소", note)
+        self.assertEqual(d("아욱", "", False)[0], "국내산")
+        # 사전에 없는 채소도 AI 가 신선 채소라고 하면 국내산
+        self.assertEqual(d("다래기", None, True)[0], "국내산")
+        # 채소가 아니면 원산지를 비워 둔다
+        self.assertIsNone(d("돼지고기 앞다리", None, False)[0])
+        self.assertIsNone(d("참치 통조림", None, True)[0])        # 가공품은 AI 가 채소라고 해도 안 함
+        self.assertIsNone(d("배추김치", None, True)[0])
+        self.assertIsNone(d(None, None, True)[0])
+
+    def test_read_label_vegetable_without_origin(self):
+        class FakeCore:
+            def __init__(self, ans):
+                self.ans = ans
+
+            def json_ask(self, *a, **k):
+                return self.ans
+        got = insp.read_label(FakeCore({"product": "대파", "origin": None, "base_date": None}), None, "m", jpeg(),
+                              "KakaoTalk_20261109_1.jpg")
+        self.assertEqual(got["name"], "대파 26.11.09 국내산")
+        self.assertTrue(got["origin_note"])
+        got = insp.read_label(FakeCore({"product": "돼지고기 앞다리", "origin": None}), None, "m", jpeg(), "KakaoTalk_20261109_1.jpg")
+        self.assertEqual(got["name"], "돼지고기 앞다리 26.11.09")
+        self.assertEqual(got["origin_note"], "")
+
     def test_date_stamp(self):
         self.assertEqual(insp.inspection_date_stamp("2026-11-12"), "26.11.12")
         self.assertEqual(insp.inspection_date_stamp("", today=date(2026, 1, 2)), "26.01.02")

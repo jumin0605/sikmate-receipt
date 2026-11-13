@@ -278,14 +278,17 @@ READ_PROMPT = (
     "- expiry_date: '유통기한', '소비기한', '품질유지기한' 뒤에 날짜가 직접 적혀 있을 때만, YYYY-MM-DD. 없으면 null.\n"
     "- shelf_months: '제조일로부터 24개월', '포장일로부터 18개월까지', '기준일로부터 12개월' 처럼 기준일에서 몇 개월인지 적혀 있을 때 그 개월 수(숫자). "
     "'일'이나 년 단위면 개월로 바꿔서(1년=12). 없으면 null.\n"
+    "- fresh_vegetable: 신선 채소·버섯·나물(표고, 대파, 무, 양파, 브로콜리, 양배추, 오이, 느타리, 청경채, 열무 등)이면 true. "
+    "김치·통조림·절임·가루·말린 것·냉동 등 가공품이거나 고기·수산물·계란·과일이면 false.\n"
     "날짜는 보이는 것만 적고 짐작하지 마세요. 글자가 거의 보이지 않으면 모두 null 로 하세요."
 )
-READ_SCHEMA = {"type": "object", "required": ["product", "origin", "base_date", "expiry_date", "shelf_months"],
+READ_SCHEMA = {"type": "object", "required": ["product", "origin", "base_date", "expiry_date", "shelf_months", "fresh_vegetable"],
                "properties": {"product": {"type": "string", "nullable": True},
                               "origin": {"type": "string", "nullable": True},
                               "base_date": {"type": "string", "nullable": True},
                               "expiry_date": {"type": "string", "nullable": True},
-                              "shelf_months": {"type": "integer", "nullable": True}}}
+                              "shelf_months": {"type": "integer", "nullable": True},
+                              "fresh_vegetable": {"type": "boolean", "nullable": True}}}
 _BAD_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
@@ -378,6 +381,51 @@ def clean_product(v) -> str | None:
     return v[:30]
 
 
+# 신선 채소·버섯류. 품명에 이 말이 들어 있으면 채소로 본다.
+VEG_WORDS = (
+    "표고", "대파", "쪽파", "실파", "무우", "총각무", "알타리", "양파", "브로콜리", "양배추", "배추", "가지", "오이",
+    "느타리", "새송이", "팽이", "양송이", "만가닥", "버섯", "청경채", "치커리", "열무", "얼갈이", "아욱", "유채",
+    "상추", "깻잎", "시금치", "부추", "당근", "감자", "고구마", "호박", "마늘", "생강", "고추", "피망", "파프리카",
+    "토마토", "셀러리", "샐러리", "미나리", "쑥갓", "참나물", "취나물", "콩나물", "숙주", "도라지", "우엉",
+    "연근", "비트", "케일", "로메인", "양상추", "적채", "콜리플라워", "아스파라거스", "냉이", "달래", "두릅",
+    "근대", "래디쉬", "옥수수", "쌈채소", "모듬쌈", "풋마늘", "마늘종", "적근대",
+    "꽈리", "깐마늘", "새싹", "무순", "청겨자", "적겨자", "파슬리", "바질",
+)
+# 한 글자라 다른 말에 들어가기 쉬워서, 띄어쓰기로 나눈 한 덩어리가 정확히 같을 때만 채소로 본다
+VEG_EXACT = ("무", "파", "갓", "쑥", "쌈", "중파", "상추", "배추")
+# 이런 말이 들어 있으면 가공품이라 채소로 안 본다 (원산지를 마음대로 국내산으로 적지 않는다)
+VEG_PROCESSED = ("김치", "통조림", "절임", "장아찌", "피클", "소스", "주스", "즙", "가루", "분말", "말랭이", "말린", "마른",
+                 "건조", "냉동", "튀김", "볶음", "무침", "다진", "자반", "잼", "페이스트", "기름", "칩", "스낵", "케첩",
+                 "케찹", "고추장", "된장", "간장", "쌈장", "전분", "국수", "라면", "샐러드팩", "샐러드")
+
+
+def is_vegetable_name(product) -> bool:
+    """품명이 신선 채소·버섯류인지. '배추김치', '냉동 브로콜리', '건고추' 같은 가공·냉동·건조품은 False."""
+    p = clean_product(product)
+    if not p:
+        return False
+    if p.startswith("건") or any(w in p for w in VEG_PROCESSED):
+        return False
+    tokens = p.split()
+    if any(t in VEG_EXACT for t in tokens):
+        return True
+    return any(w in p for w in VEG_WORDS)
+
+
+def decide_origin(product, origin, ai_fresh_vegetable=None) -> tuple[str | None, str]:
+    """(이름에 넣을 원산지, 설명). 읽은 원산지가 있으면 그대로, 없는데 신선 채소류면 '국내산'."""
+    got = normalize_origin(origin)
+    if got:
+        return got, ""
+    p = clean_product(product)
+    if not p:
+        return None, ""
+    processed = p.startswith("건") or any(w in p for w in VEG_PROCESSED)
+    if not processed and (is_vegetable_name(p) or ai_fresh_vegetable is True):
+        return "국내산", "원산지가 안 보여 채소류라 국내산으로 표기"
+    return None, ""
+
+
 def compose_name(product, date_str, origin) -> str | None:
     """'참치 통조림 26.11.09 러시아산'. 품명을 읽지 못했으면 None (원래 이름을 그대로 쓰게)."""
     product = clean_product(product)
@@ -400,8 +448,9 @@ def read_label(core, client, model, data: bytes, filename: str = "") -> dict:
         ans = core.json_ask(client, jpg, model, schema=READ_SCHEMA, prompt=READ_PROMPT)
     ans = ans or {}
     d, note = pick_date(ans, filename)
-    return {"product": clean_product(ans.get("product")), "origin": normalize_origin(ans.get("origin")),
-            "date": d, "date_note": note, "name": compose_name(ans.get("product"), d, ans.get("origin"))}
+    origin, origin_note = decide_origin(ans.get("product"), ans.get("origin"), ans.get("fresh_vegetable"))
+    return {"product": clean_product(ans.get("product")), "origin": origin, "origin_note": origin_note,
+            "date": d, "date_note": note, "name": compose_name(ans.get("product"), d, origin)}
 
 
 def photos_zip(uploads, zip_path: Path, max_side: int = 3000) -> tuple[int, list]:
