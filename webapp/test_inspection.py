@@ -328,29 +328,63 @@ class AutoName(unittest.TestCase):
         self.assertEqual(pk({"base_date": "2026-11-13", "all_dates": ["2026-11-13"], "shelf_months": 24}, "x.jpg")[0], "28.11.13")
         self.assertEqual(pk({"all_dates": ["쉽지않음", None, 5]}, "KakaoTalk_20261109_1.jpg")[0], "26.11.09")
 
-    def test_reference_example_for_chicken(self):
-        ex = insp.load_examples()
-        self.assertEqual(len(ex), 2)
-        self.assertEqual((ex[1][1]["product"], ex[1][1]["origin"]), ("미니 찐빵", None))
-        self.assertLess(len(ex[1][0]), 200_000)
-        data, ans = ex[0]
-        self.assertEqual((ans["product"], ans["origin"]), ("닭고기", "브라질"))
-        self.assertEqual(data[:2], b"\xff\xd8")
-        self.assertLess(len(data), 200_000)
-        with Image.open(io.BytesIO(data)) as im:
-            self.assertLessEqual(max(im.size), 900)
-        # 예시는 AI 에 정답과 함께 먼저, 읽을 사진은 마지막에 들어간다
+    def test_known_packages(self):
+        refs = insp.load_references()
+        self.assertEqual([(r[1], r[2]) for r in refs], [("닭고기", "브라질"), ("미니 찐빵", None)])
+        for data, *_ in refs:
+            self.assertEqual(data[:2], b"\xff\xd8")
+            self.assertLess(len(data), 200_000)
+            with Image.open(io.BytesIO(data)) as im:
+                self.assertLessEqual(max(im.size), 900)
+
+        # AI 에 보내는 내용: 참고 사진 A, B 를 글자와 함께 먼저, 판단할 사진은 마지막에
         class T:
             class Part:
                 @staticmethod
                 def from_bytes(data, mime_type):
                     return ("img", len(data))
-        c = insp._contents(T, b"target", "image/jpeg", "Q", ex)
-        self.assertEqual(c[1], ("img", len(data)))
-        self.assertIn("닭고기", c[2])
-        self.assertEqual(c[-2], ("img", 6))
-        self.assertEqual(c[-1], "Q")
-        self.assertEqual(insp._contents(T, b"t", "image/jpeg", "Q"), [("img", 1), "Q"])
+        c = insp._match_contents(T, b"target", "image/jpeg", refs)
+        self.assertIn("[참고 사진 A]", c[0])
+        self.assertIn("[참고 사진 B]", c[2])
+        self.assertEqual(c[-3:-1], ["[판단할 사진]", ("img", 6)])
+        self.assertIs(c[-1], insp.MATCH_PROMPT)
+
+    def test_match_reference_letter_to_index(self):
+        refs = insp.load_references()
+        orig = insp._ask_json
+        try:
+            for answer, want in (("A", 0), ("B", 1), ("none", None), ("C", None), ("", None)):
+                insp._ask_json = lambda *a, _ans=answer, **k: {"match": _ans}
+                self.assertEqual(insp.match_reference(None, "m", b"x", refs), want, answer)
+        finally:
+            insp._ask_json = orig
+
+    def test_matched_package_sets_product_but_reads_date_from_photo(self):
+        class FakeCore:
+            def json_ask(self, *a, **k):
+                # AI 가 품명을 못 읽었고 유통기한만 읽음
+                return {"product": None, "origin": None, "expiry_date": "2027-09-29", "all_dates": ["2027-09-29"]}
+        got = insp.read_label(FakeCore(), None, "m", jpeg(), "KakaoTalk_20261113_17.jpg", matcher=lambda: 1)
+        self.assertEqual(got["name"], "미니 찐빵 27.09.29")          # 품명은 알려진 포장, 날짜는 사진에서
+        self.assertIn("미니 찐빵", got["ref_note"])
+        # 알려진 포장에 원산지가 있으면 AI 가 못 읽었을 때만 채운다
+        got = insp.read_label(FakeCore(), None, "m", jpeg(), "KakaoTalk_20261113_17.jpg", matcher=lambda: 0)
+        self.assertEqual(got["name"], "닭고기 27.09.29 브라질산")
+        # AI 가 읽은 원산지가 있으면 그대로 둔다
+        class Read:
+            def json_ask(self, *a, **k):
+                return {"product": "냉동 닭고기", "origin": "미국", "expiry_date": "2027-09-29"}
+        got = insp.read_label(Read(), None, "m", jpeg(), "a.jpg", matcher=lambda: 0)
+        self.assertEqual(got["name"], "닭고기 27.09.29 미국산")
+        # 같은 포장이 아니면(None) AI 가 읽은 대로, 알아보기에 실패해도(예외) 그대로
+        got = insp.read_label(Read(), None, "m", jpeg(), "a.jpg", matcher=lambda: None)
+        self.assertEqual(got["name"], "냉동 닭고기 27.09.29 미국산")
+        self.assertEqual(got["ref_note"], "")
+
+        def boom():
+            raise RuntimeError("x")
+        got = insp.read_label(Read(), None, "m", jpeg(), "a.jpg", matcher=boom)
+        self.assertEqual(got["name"], "냉동 닭고기 27.09.29 미국산")
 
     def test_chicken_brazil_name(self):
         class FakeCore:

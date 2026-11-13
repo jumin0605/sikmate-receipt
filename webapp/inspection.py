@@ -210,21 +210,8 @@ def _ask_orientation(client, model, png: bytes) -> dict:
     return _ask_json(client, model, png, "image/png", ORIENT_PROMPT, ORIENT_SCHEMA, "방향")
 
 
-def _contents(types, data: bytes, mime: str, prompt: str, examples=None) -> list:
-    """AI 에 보낼 내용. examples 가 있으면 '정답을 알려 주는 예시 사진'을 먼저 보여 준다(few-shot)."""
-    out = []
-    for n, (ex_bytes, ex_answer) in enumerate(examples or [], 1):
-        out += [f"[참고 예시 {n}] 다음 사진의 정답입니다.",
-                types.Part.from_bytes(data=ex_bytes, mime_type="image/jpeg"),
-                "정답: " + json.dumps(ex_answer, ensure_ascii=False)]
-    if out:
-        out.append("[지금 읽을 사진] 위 예시와 같은 종류의 포장이면 품명·원산지를 예시와 같은 방식으로 답하되, "
-                   "날짜·글자는 이 사진에서 직접 읽으세요. 예시의 날짜를 그대로 쓰지 마세요.")
-    return out + [types.Part.from_bytes(data=data, mime_type=mime), prompt]
-
-
 def _ask_json(client, model, data: bytes, mime: str, prompt: str, schema: dict, tag: str,
-              examples=None) -> dict:
+              build=None) -> dict:
     """사진 한 장 + 질문을 보내 JSON 답을 받는다. 생각(thinking)을 최소로 줄여 빠르게 묻는다."""
     import json
     from google.genai import types
@@ -243,7 +230,7 @@ def _ask_json(client, model, data: bytes, mime: str, prompt: str, schema: dict, 
             t0 = time.time()
             resp = client.models.generate_content(
                 model=model, config=cfg,
-                contents=_contents(types, data, mime, prompt, examples))
+                contents=(build(types) if build else [types.Part.from_bytes(data=data, mime_type=mime), prompt]))
             print(f"[{tag}] {model} {opt} {time.time() - t0:.1f}초", flush=True)
         except Exception as e:  # noqa: BLE001
             msg = str(e).lower()
@@ -310,33 +297,60 @@ READ_SCHEMA = {"type": "object", "required": ["product", "origin", "base_date", 
                               "expiry_date": {"type": "string", "nullable": True},
                               "shelf_months": {"type": "integer", "nullable": True},
                               "fresh_vegetable": {"type": "boolean", "nullable": True}}}
-# 정답을 알려 주는 예시 사진(webapp/refs/). '이 모양 포장은 이렇게 읽는다'를 가르친다. 새 예시는 여기에 한 줄 추가하고 사진을 refs 에 넣으면 된다.
-# 사진은 EXIF 회전을 적용한 똑바른 방향, 긴 변 900px 이하로 둔다.
+# 알려진 포장(webapp/refs/). 사용자가 '이 모양의 사진은 ○○'라고 알려 준 것들이다.
+# 읽을 사진이 이 중 하나와 같은 포장이면 품명(과 원산지)을 여기 적힌 대로 쓴다.
+# 날짜·글자는 항상 읽을 사진에서 직접 읽는다 (예시 답을 베끼면 안 된다).
+# 새 포장은 사진을 refs 에 넣고 한 줄 추가하면 된다. 사진은 EXIF 회전을 적용한 똑바른 방향, 긴 변 900px 이하.
 REF_DIR = Path(__file__).resolve().parent / "refs"
-REF_EXAMPLES = (
-    ("chicken_brazil.jpg", {"product": "닭고기", "origin": "브라질", "base_date": "2025-11-28",
-                            "expiry_date": "2027-11-28", "shelf_months": None, "fresh_vegetable": False,
-                            "all_dates": ["2025-11-28", "2027-11-28"]}),
-    # 투명 비닐에 하얀 찐빵이 들어 있고 오른쪽에 '2027.09.29까지' 날짜가 찍힌 냉동 포장 (원산지 표기 없음)
-    ("mini_jjinppang.jpg", {"product": "미니 찐빵", "origin": None, "base_date": None,
-                            "expiry_date": "2027-09-29", "shelf_months": None, "fresh_vegetable": False,
-                            "all_dates": ["2027-09-29"]}),
+REFERENCES = (
+    # (사진 파일, 품명, 원산지(없으면 None), 사람이 읽는 설명)
+    ("chicken_brazil.jpg", "닭고기", "브라질", "주황색 냉동 닭고기 봉지(빨간 둥근 BRASIL 도장)"),
+    ("mini_jjinppang.jpg", "미니 찐빵", None, "투명 비닐 봉지에 든 하얀 미니 찐빵(냉동)"),
 )
-_examples_cache: list | None = None
+_refs_cache: list | None = None
 
 
-def load_examples() -> list:
-    """[(사진 bytes, 정답 dict)]. 파일이 없으면 그 예시는 건너뛴다."""
-    global _examples_cache
-    if _examples_cache is None:
+def load_references() -> list:
+    """[(사진 bytes, 품명, 원산지, 설명)]. 사진 파일이 없으면 그 항목은 건너뛴다."""
+    global _refs_cache
+    if _refs_cache is None:
         out = []
-        for name, answer in REF_EXAMPLES:
+        for name, product, origin, desc in REFERENCES:
             try:
-                out.append(((REF_DIR / name).read_bytes(), answer))
+                out.append(((REF_DIR / name).read_bytes(), product, origin, desc))
             except OSError:
                 continue
-        _examples_cache = out
-    return _examples_cache
+        _refs_cache = out
+    return _refs_cache
+
+
+MATCH_PROMPT = (
+    "참고 사진 A, B, ... 는 납품받는 특정 식자재 포장입니다. 맨 마지막 '판단할 사진'이 참고 사진 중 하나와 "
+    "같은 제품·같은 포장(같은 봉지, 같은 모양의 내용물)이면 그 참고 사진의 글자를, 어느 것과도 같지 않으면 none 을 고르세요. "
+    "사진 각도, 크기, 일부만 찍힌 것, 흐린 것은 상관없이 같은 포장이면 같다고 보세요. "
+    "하지만 종류만 비슷하고 포장이 다른 제품이면 none 입니다."
+)
+
+
+def _match_contents(types, data: bytes, mime: str, refs: list) -> list:
+    out = []
+    for i, (ex_bytes, product, origin, desc) in enumerate(refs):
+        out += [f"[참고 사진 {chr(65 + i)}] {desc}", types.Part.from_bytes(data=ex_bytes, mime_type="image/jpeg")]
+    return out + ["[판단할 사진]", types.Part.from_bytes(data=data, mime_type=mime), MATCH_PROMPT]
+
+
+def match_reference(client, model, jpg: bytes, refs: list | None = None) -> int | None:
+    """알려진 포장 중 같은 것의 번호(0부터). 없으면 None."""
+    refs = load_references() if refs is None else refs
+    if not refs:
+        return None
+    letters = [chr(65 + i) for i in range(len(refs))] + ["none"]
+    schema = {"type": "object", "required": ["match"],
+              "properties": {"match": {"type": "string", "enum": letters}}}
+    ans = _ask_json(client, model, jpg, "image/jpeg", MATCH_PROMPT, schema, "포장",
+                    build=lambda types: _match_contents(types, jpg, "image/jpeg", refs))
+    m = str((ans or {}).get("match", "none")).strip()
+    return ord(m) - 65 if len(m) == 1 and 0 <= ord(m) - 65 < len(refs) else None
 
 
 _BAD_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -491,20 +505,34 @@ def compose_name(product, date_str, origin) -> str | None:
     return " ".join(p for p in (product, date_str, normalize_origin(origin)) if p)
 
 
-def read_label(core, client, model, data: bytes, filename: str = "") -> dict:
+def read_label(core, client, model, data: bytes, filename: str = "", matcher=None) -> dict:
     """사진 한 장을 읽어 {'product', 'origin', 'date', 'name'} 을 돌려준다. name 은 못 읽으면 None."""
     jpg = io.BytesIO()
     open_upright(data).save(jpg, "JPEG", quality=88)
     jpg = jpg.getvalue()
     if hasattr(core, "json_client"):
         try:
-            ans = _ask_json(client, model, jpg, "image/jpeg", READ_PROMPT, READ_SCHEMA, "읽기",
-                            examples=load_examples())
+            ans = _ask_json(client, model, jpg, "image/jpeg", READ_PROMPT, READ_SCHEMA, "읽기")
         except Exception:  # noqa: BLE001  한 번 더, 기존 도구의 호출(재시도 포함)로
             ans = core.json_ask(client, jpg, model, schema=READ_SCHEMA, prompt=READ_PROMPT)
     else:                                     # 시험용 가짜 core
         ans = core.json_ask(client, jpg, model, schema=READ_SCHEMA, prompt=READ_PROMPT)
-    ans = ans or {}
+    ans = dict(ans or {})
+    ref_note = ""
+    if matcher is None and hasattr(core, "json_client"):
+        matcher = lambda: match_reference(client, model, jpg)       # noqa: E731
+    if matcher is not None:
+        try:
+            hit = matcher()
+        except Exception:  # noqa: BLE001  알아보기에 실패해도 읽은 내용은 그대로 쓴다
+            hit = None
+        refs = load_references()
+        if hit is not None and 0 <= hit < len(refs):
+            _, ref_product, ref_origin, ref_desc = refs[hit]
+            ans["product"] = ref_product                      # 사용자가 알려 준 품명이 우선
+            if ref_origin and not normalize_origin(ans.get("origin")):
+                ans["origin"] = ref_origin
+            ref_note = f"저장된 포장 '{ref_product}'(으)로 인식했습니다"
     d, note = pick_date(ans, filename)
     origin, origin_note = decide_origin(ans.get("product"), ans.get("origin"), ans.get("fresh_vegetable"))
     name, name_note = compose_name(ans.get("product"), d, origin), ""
@@ -516,7 +544,7 @@ def read_label(core, client, model, data: bytes, filename: str = "") -> dict:
             name = " ".join(p for p in (UNKNOWN_PRODUCT, d if from_photo else None, origin) if p)
             name_note = "품명을 못 읽어 읽은 날짜·원산지만 적었습니다. 품명은 이름 칸에서 직접 고쳐 주세요"
     return {"product": clean_product(ans.get("product")), "origin": origin, "origin_note": origin_note,
-            "date": d, "date_note": note, "name": name, "name_note": name_note}
+            "date": d, "date_note": note, "name": name, "name_note": name_note, "ref_note": ref_note}
 
 
 def photos_zip(uploads, zip_path: Path, max_side: int = 3000) -> tuple[int, list]:
