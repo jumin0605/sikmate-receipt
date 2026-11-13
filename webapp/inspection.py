@@ -317,6 +317,10 @@ REF_EXAMPLES = (
     ("chicken_brazil.jpg", {"product": "닭고기", "origin": "브라질", "base_date": "2025-11-28",
                             "expiry_date": "2027-11-28", "shelf_months": None, "fresh_vegetable": False,
                             "all_dates": ["2025-11-28", "2027-11-28"]}),
+    # 투명 비닐에 하얀 찐빵이 들어 있고 오른쪽에 '2027.09.29까지' 날짜가 찍힌 냉동 포장 (원산지 표기 없음)
+    ("mini_jjinppang.jpg", {"product": "미니 찐빵", "origin": None, "base_date": None,
+                            "expiry_date": "2027-09-29", "shelf_months": None, "fresh_vegetable": False,
+                            "all_dates": ["2027-09-29"]}),
 )
 _examples_cache: list | None = None
 

@@ -330,7 +330,9 @@ class AutoName(unittest.TestCase):
 
     def test_reference_example_for_chicken(self):
         ex = insp.load_examples()
-        self.assertEqual(len(ex), 1)
+        self.assertEqual(len(ex), 2)
+        self.assertEqual((ex[1][1]["product"], ex[1][1]["origin"]), ("미니 찐빵", None))
+        self.assertLess(len(ex[1][0]), 200_000)
         data, ans = ex[0]
         self.assertEqual((ans["product"], ans["origin"]), ("닭고기", "브라질"))
         self.assertEqual(data[:2], b"\xff\xd8")
