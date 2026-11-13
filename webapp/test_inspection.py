@@ -424,6 +424,13 @@ class AutoName(unittest.TestCase):
         got = insp.read_label(FakeCore({"product": "두부", "origin": "국산", "expiry_date": "2027-09-29"}), None, "m", jpeg(), "a.jpg")
         self.assertEqual((got["name"], got["name_note"]), ("두부 27.09.29 국내산", ""))
 
+    def test_shrink_jpeg(self):
+        big = jpeg(2000, 1000)
+        with Image.open(io.BytesIO(insp.shrink_jpeg(big, 640))) as im:
+            self.assertEqual(im.size, (640, 320))
+        small = jpeg(300, 200)
+        self.assertEqual(insp.shrink_jpeg(small, 640), small)       # 이미 작으면 그대로
+
     def test_date_stamp(self):
         self.assertEqual(insp.inspection_date_stamp("2026-11-12"), "26.11.12")
         self.assertEqual(insp.inspection_date_stamp("", today=date(2026, 1, 2)), "26.01.02")

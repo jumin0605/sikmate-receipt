@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+from concurrent.futures import ThreadPoolExecutor
 import re
 import time
 from datetime import date, datetime, timedelta
@@ -507,11 +508,31 @@ def compose_name(product, date_str, origin) -> str | None:
     return " ".join(p for p in (product, date_str, normalize_origin(origin)) if p)
 
 
+def shrink_jpeg(jpg: bytes, side: int) -> bytes:
+    """JPEG 를 긴 변 side px 로 줄인다 (이미 작으면 그대로)."""
+    with Image.open(io.BytesIO(jpg)) as im:
+        if max(im.size) <= side:
+            return jpg
+        im = im.convert("RGB")
+        im.thumbnail((side, side), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85)
+        return buf.getvalue()
+
+
 def read_label(core, client, model, data: bytes, filename: str = "", matcher=None) -> dict:
     """사진 한 장을 읽어 {'product', 'origin', 'date', 'name'} 을 돌려준다. name 은 못 읽으면 None."""
     jpg = io.BytesIO()
     open_upright(data).save(jpg, "JPEG", quality=88)
     jpg = jpg.getvalue()
+    # 저장된 포장과 같은지 알아보는 질문은 글자 읽기와 동시에 보낸다 (시간이 두 배로 늘지 않게)
+    if matcher is None and hasattr(core, "json_client") and load_references():
+        small = shrink_jpeg(jpg, 640)
+        matcher = lambda: match_reference(client, model, small)       # noqa: E731
+    pool = fut = None
+    if matcher is not None:
+        pool = ThreadPoolExecutor(max_workers=1)
+        fut = pool.submit(matcher)
     if hasattr(core, "json_client"):
         try:
             ans = _ask_json(client, model, jpg, "image/jpeg", READ_PROMPT, READ_SCHEMA, "읽기")
@@ -521,13 +542,13 @@ def read_label(core, client, model, data: bytes, filename: str = "", matcher=Non
         ans = core.json_ask(client, jpg, model, schema=READ_SCHEMA, prompt=READ_PROMPT)
     ans = dict(ans or {})
     ref_note = ""
-    if matcher is None and hasattr(core, "json_client"):
-        matcher = lambda: match_reference(client, model, jpg)       # noqa: E731
-    if matcher is not None:
+    if fut is not None:
         try:
-            hit = matcher()
+            hit = fut.result()
         except Exception:  # noqa: BLE001  알아보기에 실패해도 읽은 내용은 그대로 쓴다
             hit = None
+        finally:
+            pool.shutdown(wait=False)
         refs = load_references()
         if hit is not None and 0 <= hit < len(refs):
             _, ref_product, ref_origin, ref_desc = refs[hit]
