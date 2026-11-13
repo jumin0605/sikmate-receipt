@@ -729,7 +729,7 @@ $('#newUpload').onclick = () => {
     $('#inspThumbs').innerHTML = list.map((x, i) => `<figure><button type="button" class="x" title="이 사진 빼기" data-i="${i}">×</button>`
       + `<img src="${previewOf(x)}" alt="" style="${x.small ? '' : `transform:rotate(${x.rot}deg)`}">`
       + `<textarea class="nm" rows="2" maxlength="60" data-n="${i}" title="이 이름이 엑셀의 사진 위에 적힙니다" aria-label="사진 이름">${esc(x.name)}</textarea>`
-      + `<div class="dn">${x.dateNote ? '날짜: ' + esc(x.dateNote) : ''}${x.originNote ? '<br>원산지: ' + esc(x.originNote) : ''}</div>`
+      + `<div class="dn">${x.dateNote ? '날짜: ' + esc(x.dateNote) : ''}${x.originNote ? '<br>원산지: ' + esc(x.originNote) : ''}${x.nameNote ? '<br><b style="color:#92400e">' + esc(x.nameNote) + '</b>' : ''}</div>`
       + `<div class="rot"><button type="button" class="mini sub" data-r="${i}" data-d="270" title="왼쪽으로 돌리기">↺</button>`
       + `<button type="button" class="mini sub" data-r="${i}" data-d="90" title="오른쪽으로 돌리기">↻</button></div>`
       + (x.auto ? '<span class="autotag">자동 회전</span> ' : '') + tagOf(x) + '</figure>').join('');
@@ -770,7 +770,7 @@ $('#newUpload').onclick = () => {
         }
         part.forEach((x, i) => {
           const it = j.items[i];
-          if (it && it.name && !x.edited) { x.name = it.name; x.dateNote = it.date_note || ''; x.originNote = it.origin_note || ''; x.read = 'done'; okN += 1; }
+          if (it && it.name && !x.edited) { x.name = it.name; x.dateNote = it.date_note || ''; x.originNote = it.origin_note || ''; x.nameNote = it.name_note || ''; x.read = 'done'; okN += 1; }
           else if (it && it.name) { x.read = 'done'; }              // 사용자가 이미 고친 이름은 덮어쓰지 않는다
           else { x.read = 'fail'; failN += 1; }
         });
@@ -852,7 +852,7 @@ $('#newUpload').onclick = () => {
   $('#inspRead').onclick = () => {
     if (busy || reading || !list.length) return;
     if (list.some(x => x.edited) && !confirm('직접 고친 이름도 AI가 읽은 이름으로 바뀝니다. 다시 읽을까요?')) return;
-    list.forEach(x => { x.edited = false; x.read = 'todo'; x.name = stemOf(x.file.name); x.dateNote = ''; x.originNote = ''; });
+    list.forEach(x => { x.edited = false; x.read = 'todo'; x.name = stemOf(x.file.name); x.dateNote = ''; x.originNote = ''; x.nameNote = ''; });
     readNames();
   };
 
