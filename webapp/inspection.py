@@ -12,7 +12,7 @@ from __future__ import annotations
 import io
 import re
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -261,8 +261,11 @@ def detect_rotation(core, client, model, data: bytes) -> int:
 # 사진 내용 읽기 -> 파일 이름 자동 만들기
 #
 # 원산지 표시 사진에서 품명과 원산지를 읽어 '참치 통조림 26.11.09 러시아산' 같은 이름을 만든다.
-# 날짜는 파일 이름에서 가져온다 (카카오톡 사진 KakaoTalk_20261109_135452116 -> 26.11.09).
-# 사진 속 날짜는 유통기한·제조일일 수 있어 날짜로 쓰지 않는다.
+# 날짜는 사진 속 날짜를 우선한다.
+#   - 유통기한(소비기한) 날짜가 적혀 있으면 그 날짜
+#   - 제조일·포장일·생산일이고 '기준일로부터 24개월' 같은 기간이 있으면 기준일 + 기간 (26.11.13 + 24개월 = 28.11.13)
+#   - 기간 없이 제조일만 있으면 그 날짜
+#   - 사진에 날짜가 없으면 파일 이름의 날짜 (카카오톡 사진 KakaoTalk_20261109_135452116 -> 26.11.09)
 # ---------------------------------------------------------------------------
 READ_PROMPT = (
     "이 사진은 식자재를 납품받을 때 찍은 포장지 또는 원산지 표시 사진입니다. 글자를 읽어 알려 주세요.\n"
@@ -271,11 +274,18 @@ READ_PROMPT = (
     "- origin: 원산지를 '나라 이름+산' 한 가지로 (예: '국내산', '러시아산', '중국산', '미국산', '노르웨이산'). "
     "원료가 여러 나라면 맨 앞에 적힌(가장 많은) 원료의 원산지 하나만. '국산'은 '국내산'으로. "
     "원산지가 보이지 않으면 null. 짐작해서 적지 마세요.\n"
-    "글자가 거의 보이지 않으면 둘 다 null 로 하세요."
+    "- base_date: 포장지에 인쇄된 제조일·포장일·생산일·도축일 등 '기준일'. YYYY-MM-DD 형식, 연도가 두 자리(26.11.13)면 20대로 보세요(2026). 없으면 null.\n"
+    "- expiry_date: '유통기한', '소비기한', '품질유지기한' 뒤에 날짜가 직접 적혀 있을 때만, YYYY-MM-DD. 없으면 null.\n"
+    "- shelf_months: '제조일로부터 24개월', '포장일로부터 18개월까지', '기준일로부터 12개월' 처럼 기준일에서 몇 개월인지 적혀 있을 때 그 개월 수(숫자). "
+    "'일'이나 년 단위면 개월로 바꿔서(1년=12). 없으면 null.\n"
+    "날짜는 보이는 것만 적고 짐작하지 마세요. 글자가 거의 보이지 않으면 모두 null 로 하세요."
 )
-READ_SCHEMA = {"type": "object", "required": ["product", "origin"],
+READ_SCHEMA = {"type": "object", "required": ["product", "origin", "base_date", "expiry_date", "shelf_months"],
                "properties": {"product": {"type": "string", "nullable": True},
-                              "origin": {"type": "string", "nullable": True}}}
+                              "origin": {"type": "string", "nullable": True},
+                              "base_date": {"type": "string", "nullable": True},
+                              "expiry_date": {"type": "string", "nullable": True},
+                              "shelf_months": {"type": "integer", "nullable": True}}}
 _BAD_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
@@ -298,6 +308,54 @@ def date_from_name(name: str) -> str | None:
     if m:
         return ok(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3)))
     return None
+
+
+def parse_iso(v) -> date | None:
+    """AI 가 준 'YYYY-MM-DD' (혹은 2026.11.13 / 26.11.13). 없거나 이상하면 None."""
+    s = str(v or "").strip()
+    m = re.fullmatch(r"(\d{2,4})\s*[-./]\s*(\d{1,2})\s*[-./]\s*(\d{1,2})", s)
+    if not m:
+        return None
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if y < 100:
+        y += 2000
+    if not 2000 <= y <= 2100:
+        return None
+    try:
+        return date(y, mo, d)
+    except ValueError:
+        return None
+
+
+def add_months(d: date, n: int) -> date:
+    """d 에 n개월을 더한다. 날짜가 없는 달이면 그 달 말일로 (2026-08-31 + 6개월 = 2027-02-28)."""
+    t = d.year * 12 + (d.month - 1) + n
+    y, m = divmod(t, 12)
+    m += 1
+    last = (date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)).day
+    return date(y, m, min(d.day, last))
+
+
+def pick_date(ans: dict, filename: str = "") -> tuple[str | None, str]:
+    """사진에서 읽은 날짜로 이름에 넣을 날짜('YY.MM.DD')와 그 출처 설명을 고른다.
+    유통기한 날짜 > 기준일+개월 > 기준일 > 파일 이름의 날짜."""
+    base, exp = parse_iso(ans.get("base_date")), parse_iso(ans.get("expiry_date"))
+    try:
+        months = int(ans.get("shelf_months")) if ans.get("shelf_months") is not None else None
+    except (TypeError, ValueError):
+        months = None
+    if months is not None and not 1 <= months <= 120:
+        months = None
+    f = lambda d: d.strftime("%y.%m.%d")
+    if exp and not (base and exp < base):
+        return f(exp), f"유통기한 {f(exp)}"
+    if base and months:
+        out = add_months(base, months)
+        return f(out), f"기준일 {f(base)} + {months}개월"
+    if base:
+        return f(base), f"사진에 적힌 날짜 {f(base)}"
+    d = date_from_name(filename)
+    return d, (f"파일 이름의 날짜 {d}" if d else "날짜 없음")
 
 
 def normalize_origin(v) -> str | None:
@@ -341,9 +399,9 @@ def read_label(core, client, model, data: bytes, filename: str = "") -> dict:
     else:                                     # 시험용 가짜 core
         ans = core.json_ask(client, jpg, model, schema=READ_SCHEMA, prompt=READ_PROMPT)
     ans = ans or {}
-    d = date_from_name(filename)
+    d, note = pick_date(ans, filename)
     return {"product": clean_product(ans.get("product")), "origin": normalize_origin(ans.get("origin")),
-            "date": d, "name": compose_name(ans.get("product"), d, ans.get("origin"))}
+            "date": d, "date_note": note, "name": compose_name(ans.get("product"), d, ans.get("origin"))}
 
 
 def photos_zip(uploads, zip_path: Path, max_side: int = 3000) -> tuple[int, list]:

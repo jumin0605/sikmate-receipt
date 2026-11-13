@@ -1,6 +1,7 @@
 """식자재 검수서(원산지 표시) 웹 기능이 기존 도구의 표 모양 그대로 엑셀·워드를 만드는지 확인한다."""
 import importlib.util
 import io
+import re
 import sys
 import tempfile
 import unittest
@@ -225,6 +226,56 @@ class AutoName(unittest.TestCase):
                 with Image.open(io.BytesIO(z.read("참치 26.11.09 러시아산.jpg"))) as im:
                     self.assertEqual(im.size, (400, 800))      # 90도 돌린 방향이 반영됐다
 
+    def test_add_months(self):
+        a = insp.add_months
+        self.assertEqual(a(date(2026, 11, 13), 24), date(2028, 11, 13))
+        self.assertEqual(a(date(2026, 11, 13), 18), date(2028, 5, 13))
+        self.assertEqual(a(date(2026, 11, 13), 12), date(2027, 11, 13))
+        self.assertEqual(a(date(2026, 11, 13), 15), date(2028, 2, 13))
+        self.assertEqual(a(date(2026, 8, 31), 6), date(2027, 2, 28))      # 날짜가 없는 달은 말일로
+        self.assertEqual(a(date(2024, 2, 29), 12), date(2025, 2, 28))
+        self.assertEqual(a(date(2026, 1, 31), 11), date(2026, 12, 31))
+
+    def test_parse_iso(self):
+        p = insp.parse_iso
+        self.assertEqual(p("2026-11-13"), date(2026, 11, 13))
+        self.assertEqual(p("26.11.13"), date(2026, 11, 13))
+        self.assertEqual(p("2026/1/3"), date(2026, 1, 3))
+        self.assertIsNone(p("2026-13-01"))
+        self.assertIsNone(p("1999-01-01"))
+        self.assertIsNone(p(None))
+        self.assertIsNone(p("모름"))
+
+    def test_pick_date_rules(self):
+        pk = insp.pick_date
+        # 유통기한이 직접 적혀 있으면 그 날짜
+        self.assertEqual(pk({"expiry_date": "2027-05-01", "base_date": "2026-11-13", "shelf_months": 24}, "x.jpg")[0], "27.05.01")
+        # 제조일 + 24개월까지 -> 기준일에 24개월
+        self.assertEqual(pk({"base_date": "2026-11-13", "shelf_months": 24}, "x.jpg")[0], "28.11.13")
+        self.assertEqual(pk({"base_date": "2026-11-13", "shelf_months": 18}, "x.jpg")[0], "28.05.13")
+        self.assertEqual(pk({"base_date": "2026-11-13", "shelf_months": 12}, "x.jpg")[0], "27.11.13")
+        self.assertEqual(pk({"base_date": "2026-11-13", "shelf_months": 15}, "x.jpg")[0], "28.02.13")
+        # 기간 없이 제조일만 있으면 그 날짜
+        self.assertEqual(pk({"base_date": "2026-11-13"}, "x.jpg")[0], "26.11.13")
+        # 사진에 날짜가 없으면 파일 이름
+        d, note = pk({}, "KakaoTalk_20261109_135452116.jpg")
+        self.assertEqual(d, "26.11.09")
+        self.assertIn("파일 이름", note)
+        self.assertEqual(pk({}, "IMG_1.jpg")[0], None)
+        # 엉뚱한 값은 무시 (개월 0, 너무 큰 값, 유통기한이 제조일보다 앞)
+        self.assertEqual(pk({"base_date": "2026-11-13", "shelf_months": 0}, "x.jpg")[0], "26.11.13")
+        self.assertEqual(pk({"base_date": "2026-11-13", "shelf_months": 999}, "x.jpg")[0], "26.11.13")
+        self.assertEqual(pk({"base_date": "2026-11-13", "expiry_date": "2025-01-01", "shelf_months": 24}, "x.jpg")[0], "28.11.13")
+        self.assertEqual(pk({"base_date": "2026-11-13", "shelf_months": "24"}, "x.jpg")[0], "28.11.13")
+
+    def test_read_label_uses_date_in_photo(self):
+        class FakeCore:
+            def json_ask(self, *a, **k):
+                return {"product": "두부", "origin": "국산", "base_date": "2026-11-13", "expiry_date": None, "shelf_months": 24}
+        got = insp.read_label(FakeCore(), None, "m", jpeg(), "KakaoTalk_20261109_1.jpg")
+        self.assertEqual(got["name"], "두부 28.11.13 국내산")      # 파일 이름의 26.11.09 보다 사진 속 날짜가 우선
+        self.assertIn("24개월", got["date_note"])
+
     def test_date_stamp(self):
         self.assertEqual(insp.inspection_date_stamp("2026-11-12"), "26.11.12")
         self.assertEqual(insp.inspection_date_stamp("", today=date(2026, 1, 2)), "26.01.02")
@@ -244,6 +295,14 @@ class Wiring(unittest.TestCase):
         self.assertIn("fetch('/api/inspection/read'", html)
         self.assertIn("'/api/inspection/zip'", html)
         self.assertIn('id="inspRead"', html)
+        # "검수서 엑셀 받기" 가 버튼 줄의 맨 왜쪽(첫 번째)
+        row = html[html.index('id="inspProblems"') - 1500: html.index('id="inspProblems"')]
+        ids = re.findall(r'<button[^>]*id="(insp\w+)"', row)
+        self.assertEqual(ids[0], "inspGo")
+        # 화면 미리보기만 크게 한다. 엑셀 쪽 사진 크기(155x116)는 그대로
+        self.assertIn("--thumb", html)
+        core_src = (ROOT.parent / "영수증_정리_도구.py").read_text(encoding="utf-8")
+        self.assertIn("img_w, img_h = 155, 116", core_src)
         self.assertIn('id="inspZip"', html)
         self.assertIn("fetch('/api/inspection/orient'", html)
         self.assertIn("fd.append('rotations'", html)
