@@ -431,6 +431,26 @@ class AutoName(unittest.TestCase):
         small = jpeg(300, 200)
         self.assertEqual(insp.shrink_jpeg(small, 640), small)       # 이미 작으면 그대로
 
+    def test_stamped_date_without_label_plus_months(self):
+        # 뒷면: '제조연월일 별도표기 / 소비기한 제조일로부터 24개월까지', 앞면 점선 글씨 2026.10.19 (이름표 없음)
+        pk = insp.pick_date
+        d, note = pk({"shelf_months": 24, "all_dates": ["2026-10-19"]}, "KakaoTalk_20261113_18.jpg")
+        self.assertEqual(d, "28.10.19")
+        self.assertIn("24개월", note)
+        # 날짜가 하나뿐이고 기간도 없으면 이름표 없는 날짜라 쓰지 않는다 (제조일인지 유통기한인지 모름)
+        self.assertEqual(pk({"all_dates": ["2026-10-19"]}, "KakaoTalk_20261113_18.jpg")[0], "26.11.13")
+        # 기간만 있고 날짜가 없으면 파일 이름
+        self.assertEqual(pk({"shelf_months": 24, "all_dates": []}, "KakaoTalk_20261113_18.jpg")[0], "26.11.13")
+        # 유통기한이 직접 적혀 있으면 그대로
+        self.assertEqual(pk({"expiry_date": "2027-01-01", "shelf_months": 24, "all_dates": ["2027-01-01"]}, "x.jpg")[0], "27.01.01")
+
+        class FakeCore:
+            def json_ask(self, *a, **k):
+                return {"product": "뉴슈가분말", "origin": None, "shelf_months": 24, "all_dates": ["2026-10-19"]}
+        got = insp.read_label(FakeCore(), None, "m", jpeg(), "KakaoTalk_20261113_175723998_18.jpg", matcher=lambda: None)
+        self.assertEqual(got["name"], "뉴슈가분말 28.10.19")
+        self.assertEqual(got["raw"]["shelf_months"], 24)
+
     def test_date_stamp(self):
         self.assertEqual(insp.inspection_date_stamp("2026-11-12"), "26.11.12")
         self.assertEqual(insp.inspection_date_stamp("", today=date(2026, 1, 2)), "26.01.02")

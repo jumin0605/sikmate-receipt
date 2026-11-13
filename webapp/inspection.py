@@ -281,6 +281,8 @@ READ_PROMPT = (
     "- expiry_date: '유통기한', '소비기한', '품질유지기한' 뒤에 날짜가 직접 적혀 있을 때만, YYYY-MM-DD. 없으면 null.\n"
     "- shelf_months: '제조일로부터 24개월', '포장일로부터 18개월까지', '기준일로부터 12개월' 처럼 기준일에서 몇 개월인지 적혀 있을 때 그 개월 수(숫자). "
     "'일'이나 년 단위면 개월로 바꿔서(1년=12). 없으면 null.\n"
+    "'제조연월일 별도표기', '제조일자는 포장에 표기' 라고 적혀 있으면, 포장 앞뒤 어딘가에 점선·잉크로 찍힌 날짜가 제조일입니다. "
+    "라벨 없이 찍힌 그 날짜를 base_date 로 하고, '소비기한: 제조일로부터 24개월까지' 같은 말이 있으면 shelf_months 를 24 로 하세요.\n"
     "- all_dates: 사진에 인쇄된 날짜를 모두 YYYY-MM-DD 로(바코드·로트 번호는 제외). 없으면 빈 배열.\n"
     "날짜가 두 개 이상 나란히 있고 이름표가 안 보이면, 이른 날짜는 제조·포장일이고 늦은 날짜가 유통기한입니다. "
     "사진이 옆으로 누웠거나 뒤집혀 있어도 글자를 돌려서 읽으세요.\n"
@@ -411,6 +413,12 @@ def pick_date(ans: dict, filename: str = "") -> tuple[str | None, str]:
     유통기한 날짜 > 기준일+개월 > 기준일 > 파일 이름의 날짜."""
     base, exp = parse_iso(ans.get("base_date")), parse_iso(ans.get("expiry_date"))
     found = sorted({d for d in (parse_iso(v) for v in (ans.get("all_dates") or []) if isinstance(v, str)) if d})
+    try:
+        _m = int(ans.get("shelf_months")) if ans.get("shelf_months") is not None else None
+    except (TypeError, ValueError):
+        _m = None
+    if not base and not exp and _m and 1 <= _m <= 120 and len(found) == 1:
+        base = found[0]           # '제조일로부터 N개월' 인데 날짜가 하나뿐이면 그 스탬프 날짜가 제조일
     if len(found) >= 2:           # 날짜가 두 개 이상 인쇄돼 있으면 가장 늦은 날짜가 유통기한, 이른 날짜가 제조·포장일
         exp = found[-1]
         base = base if (base and base < exp) else found[0]
@@ -569,7 +577,8 @@ def read_label(core, client, model, data: bytes, filename: str = "", matcher=Non
             name = " ".join(p for p in (UNKNOWN_PRODUCT, d if from_photo else None, origin) if p)
             name_note = "품명을 못 읽어 읽은 날짜·원산지만 적었습니다. 품명은 이름 칸에서 직접 고쳐 주세요"
     return {"product": clean_product(ans.get("product")), "origin": origin, "origin_note": origin_note,
-            "date": d, "date_note": note, "name": name, "name_note": name_note, "ref_note": ref_note}
+            "date": d, "date_note": note, "name": name, "name_note": name_note, "ref_note": ref_note,
+            "raw": {k: ans.get(k) for k in ("product", "origin", "base_date", "expiry_date", "shelf_months", "all_dates")}}
 
 
 def photos_zip(uploads, zip_path: Path, max_side: int = 3000) -> tuple[int, list]:
