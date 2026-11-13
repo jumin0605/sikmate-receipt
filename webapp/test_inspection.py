@@ -330,7 +330,7 @@ class AutoName(unittest.TestCase):
 
     def test_known_packages(self):
         refs = insp.load_references()
-        self.assertEqual([(r[1], r[2]) for r in refs], [("닭고기", "브라질"), ("미니 찐빵", None)])
+        self.assertEqual([(r[1], r[2]) for r in refs], [("닭고기", "브라질"), ("미니 찐빵", "")])
         for data, *_ in refs:
             self.assertEqual(data[:2], b"\xff\xd8")
             self.assertLess(len(data), 200_000)
@@ -376,6 +376,12 @@ class AutoName(unittest.TestCase):
                 return {"product": "냉동 닭고기", "origin": "미국", "expiry_date": "2027-09-29"}
         got = insp.read_label(Read(), None, "m", jpeg(), "a.jpg", matcher=lambda: 0)
         self.assertEqual(got["name"], "닭고기 27.09.29 미국산")
+        # 미니 찐빵은 원료마다 원산지가 달라 AI 가 읽은 원산지(중국)를 이름에 적지 않는다
+        class Cn:
+            def json_ask(self, *a, **k):
+                return {"product": None, "origin": "중국", "expiry_date": "2027-09-29"}
+        got = insp.read_label(Cn(), None, "m", jpeg(), "a.jpg", matcher=lambda: 1)
+        self.assertEqual(got["name"], "미니 찐빵 27.09.29")
         # 같은 포장이 아니면(None) AI 가 읽은 대로, 알아보기에 실패해도(예외) 그대로
         got = insp.read_label(Read(), None, "m", jpeg(), "a.jpg", matcher=lambda: None)
         self.assertEqual(got["name"], "냉동 닭고기 27.09.29 미국산")

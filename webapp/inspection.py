@@ -303,9 +303,11 @@ READ_SCHEMA = {"type": "object", "required": ["product", "origin", "base_date", 
 # 새 포장은 사진을 refs 에 넣고 한 줄 추가하면 된다. 사진은 EXIF 회전을 적용한 똑바른 방향, 긴 변 900px 이하.
 REF_DIR = Path(__file__).resolve().parent / "refs"
 REFERENCES = (
-    # (사진 파일, 품명, 원산지(없으면 None), 사람이 읽는 설명)
+    # (사진 파일, 품명, 원산지, 사람이 읽는 설명)
+    # 원산지: '나라' = AI 가 못 읽었을 때 그 나라로 채움 / None = AI 가 읽은 대로 / '' = 이름에 원산지를 적지 않음
+    #   ('' 은 원료마다 원산지가 달라 한 가지로 정할 수 없는 가공식품용)
     ("chicken_brazil.jpg", "닭고기", "브라질", "주황색 냉동 닭고기 봉지(빨간 둥근 BRASIL 도장)"),
-    ("mini_jjinppang.jpg", "미니 찐빵", None, "투명 비닐 봉지에 든 하얀 미니 찐빵(냉동)"),
+    ("mini_jjinppang.jpg", "미니 찐빵", "", "투명 비닐 봉지에 든 하얀 미니 찐빵(냉동)"),
 )
 _refs_cache: list | None = None
 
@@ -530,7 +532,9 @@ def read_label(core, client, model, data: bytes, filename: str = "", matcher=Non
         if hit is not None and 0 <= hit < len(refs):
             _, ref_product, ref_origin, ref_desc = refs[hit]
             ans["product"] = ref_product                      # 사용자가 알려 준 품명이 우선
-            if ref_origin and not normalize_origin(ans.get("origin")):
+            if ref_origin == "":
+                ans["origin"] = None                              # 이 포장은 이름에 원산지를 적지 않는다
+            elif ref_origin and not normalize_origin(ans.get("origin")):
                 ans["origin"] = ref_origin
             ref_note = f"저장된 포장 '{ref_product}'(으)로 인식했습니다"
     d, note = pick_date(ans, filename)
