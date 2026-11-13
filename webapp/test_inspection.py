@@ -359,6 +359,29 @@ class AutoName(unittest.TestCase):
         self.assertEqual(got["name"], "닭고기 27.11.28 브라질산")
         self.assertIn("유통기한", got["date_note"])
 
+    def test_unreadable_product_still_shows_expiry(self):
+        class FakeCore:
+            def __init__(self, ans):
+                self.ans = ans
+
+            def json_ask(self, *a, **k):
+                return self.ans
+        # 품명은 못 읽었지만 유통기한(2027.09.29까지)은 읽음
+        got = insp.read_label(FakeCore({"product": None, "origin": None, "expiry_date": "2027-09-29", "all_dates": ["2027-09-29"]}),
+                              None, "m", jpeg(), "KakaoTalk_20261113_175723998_17.jpg")
+        self.assertEqual(got["name"], "품명미확인 27.09.29")
+        self.assertTrue(got["name_note"])
+        # 원산지만 읽었을 때도 적는다 (날짜는 파일 이름에서만 있으니 뽐다)
+        got = insp.read_label(FakeCore({"product": None, "origin": "브라질"}), None, "m", jpeg(), "KakaoTalk_20261113_1.jpg")
+        self.assertEqual(got["name"], "품명미확인 브라질산")
+        # 아무것도 못 읽었고 날짜는 파일 이름뿐 -> 이름을 바꾸지 않는다
+        got = insp.read_label(FakeCore({"product": None, "origin": None}), None, "m", jpeg(), "KakaoTalk_20261113_1.jpg")
+        self.assertIsNone(got["name"])
+        self.assertEqual(got["name_note"], "")
+        # 품명을 읽으면 예전처럼
+        got = insp.read_label(FakeCore({"product": "두부", "origin": "국산", "expiry_date": "2027-09-29"}), None, "m", jpeg(), "a.jpg")
+        self.assertEqual((got["name"], got["name_note"]), ("두부 27.09.29 국내산", ""))
+
     def test_date_stamp(self):
         self.assertEqual(insp.inspection_date_stamp("2026-11-12"), "26.11.12")
         self.assertEqual(insp.inspection_date_stamp("", today=date(2026, 1, 2)), "26.01.02")

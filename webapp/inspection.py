@@ -476,6 +476,9 @@ def decide_origin(product, origin, ai_fresh_vegetable=None) -> tuple[str | None,
     return None, ""
 
 
+UNKNOWN_PRODUCT = "품명미확인"      # 품명을 못 읽었을 때 이름 자리에 넣는 말
+
+
 def compose_name(product, date_str, origin) -> str | None:
     """'참치 통조림 26.11.09 러시아산'. 품명을 읽지 못했으면 None (원래 이름을 그대로 쓰게)."""
     product = clean_product(product)
@@ -500,8 +503,16 @@ def read_label(core, client, model, data: bytes, filename: str = "") -> dict:
     ans = ans or {}
     d, note = pick_date(ans, filename)
     origin, origin_note = decide_origin(ans.get("product"), ans.get("origin"), ans.get("fresh_vegetable"))
+    name, name_note = compose_name(ans.get("product"), d, origin), ""
+    if not name:
+        # 품명은 못 읽었어도 사진에서 유통기한·날짜나 원산지를 읽었으면 그것만이라도 이름에 적는다
+        # (파일 이름에서 가져온 날짜만 있는 경우는 사진에서 읽은 게 없으니 원래 이름 그대로 둔다)
+        from_photo = bool(d) and not note.startswith("파일 이름")
+        if from_photo or origin:
+            name = " ".join(p for p in (UNKNOWN_PRODUCT, d if from_photo else None, origin) if p)
+            name_note = "품명을 못 읽어 읽은 날짜·원산지만 적었습니다. 품명은 이름 칸에서 직접 고쳐 주세요"
     return {"product": clean_product(ans.get("product")), "origin": origin, "origin_note": origin_note,
-            "date": d, "date_note": note, "name": compose_name(ans.get("product"), d, origin)}
+            "date": d, "date_note": note, "name": name, "name_note": name_note}
 
 
 def photos_zip(uploads, zip_path: Path, max_side: int = 3000) -> tuple[int, list]:
