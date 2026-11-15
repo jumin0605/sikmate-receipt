@@ -166,7 +166,7 @@
     <button class="sub" id="inspAuto" disabled title="누웠거나 뒤집힌 사진을 AI가 찾아 똑바로 돌립니다">방향 자동 맞추기</button>
     <button class="sub" id="inspRead" disabled title="사진 내용을 읽어 이름을 처음부터 다시 붙입니다">이름 다시 읽기</button>
     <button class="sub" id="inspGoWord" disabled>워드로 받기</button>
-    <button class="sub" id="inspZip" disabled title="이름을 붙인 사진 파일들을 zip 으로 받습니다(돌린 방향도 반영)">이름 붙인 사진 받기(zip)</button>
+    <button class="sub" id="inspZip" disabled title="이름 칸의 이름으로 사진 파일을 저장합니다(돌린 방향도 반영)">이름 바꿔 사진 저장(zip)</button>
     <button class="sub" id="inspClear" disabled>목록 비우기</button>
     <span id="inspMsg" class="note"></span>
   </div>
@@ -932,7 +932,7 @@ $('#newUpload').onclick = () => {
   const stampOf = () => { const d = $('#inspDate').value; return d ? d.slice(2).replace(/-/g, '.') : ''; };
   $('#inspGo').onclick = () => fetchAndSave('/api/inspection', $('#inspGo'), '만드는 중… (잠시만요)', `원산지 표시_${stampOf()}.xlsx`, '만들었습니다.');
   $('#inspGoWord').onclick = () => fetchAndSave('/api/inspection', $('#inspGoWord'), '만드는 중… (잠시만요)', `원산지 표시_${stampOf()}.docx`, '만들었습니다.');
-  $('#inspZip').onclick = () => fetchAndSave('/api/inspection/zip', $('#inspZip'), '묶는 중… (잠시만요)', `원산지 표시 사진_${stampOf()}.zip`, '내려받았습니다.');
+  $('#inspZip').onclick = () => fetchAndSave('/api/inspection/zip', $('#inspZip'), '저장하는 중… (잠시만요)', `원산지 표시 사진_${stampOf()}.zip`, '저장했습니다.');
 })();
 
 // 새로고침해도 마지막 작업을 이어서 보여 준다. 없는 작업은 진행 화면에 가두지 않는다.
