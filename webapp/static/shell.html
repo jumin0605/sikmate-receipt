@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>식담온</title>
+<style>
+html,body{height:100%;margin:0}
+body{display:flex;flex-direction:column;font-family:"맑은 고딕","Malgun Gothic",system-ui,sans-serif;background:#f1f5f9}
+.bar{display:flex;align-items:center;gap:4px;background:#0f766e;color:#fff;padding:0 14px;height:46px;flex:none;box-shadow:0 1px 4px rgba(0,0,0,.2);z-index:2}
+.logo{font-weight:800;font-size:16px;color:#fff;text-decoration:none;margin-right:18px;display:flex;align-items:center;gap:7px}
+.logo i{font-style:normal;background:#fff;color:#0f766e;border-radius:7px;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;font-size:14px}
+.tab{background:transparent;border:0;color:#c7ece8;font-size:14.5px;font-family:inherit;padding:0 16px;height:46px;cursor:pointer;border-bottom:3px solid transparent}
+.tab:hover{color:#fff}
+.tab.on{color:#fff;font-weight:700;border-bottom-color:#fde68a}
+.sp{flex:1}
+.bar a.sm{color:#c7ece8;font-size:12.5px;text-decoration:none}
+.bar a.sm:hover{color:#fff}
+.frames{flex:1;position:relative;min-height:0}
+iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:none;background:#fff}
+iframe.on{display:block}
+@media print{.bar{display:none}}
+</style></head><body>
+<div class="bar">
+  <a class="logo" href="/" target="_top"><i>식</i>식담온</a>
+  <button class="tab" data-k="receipt">영수증 정리</button>
+  <button class="tab" data-k="menu">신태양 식단표 · 발주서</button>
+  <span class="sp"></span>
+  <a class="sm" href="/" target="_top">소개</a>
+</div>
+<div class="frames">
+  <iframe id="f-receipt" title="영수증 정리"></iframe>
+  <iframe id="f-menu" title="신태양 식단표 발주서 생성기"></iframe>
+</div>
+<script>
+// 만료된 세션 등으로 이 화면이 다른 화면 안에 겹쳐 열리면 맨 위로 빠져나온다
+if (window.top !== window) { window.top.location.href = location.href; }
+var SRC = { receipt: '/app/receipt', menu: '/menu' };
+var TITLE = { receipt: '식담온 · 영수증 정리', menu: '식담온 · 신태양 식단표·발주서' };
+function fixLinks(f){
+  try {
+    f.contentDocument.querySelectorAll('a[href="/"]').forEach(function(a){ a.target = '_top'; });
+  } catch (e) {}
+}
+Object.keys(SRC).forEach(function(k){
+  var f = document.getElementById('f-' + k);
+  f.addEventListener('load', function(){ fixLinks(f); });
+});
+function show(k){
+  Object.keys(SRC).forEach(function(x){
+    var f = document.getElementById('f-' + x);
+    var on = x === k;
+    if (on && !f.getAttribute('src')) f.setAttribute('src', SRC[x]);   // 처음 열 때만 불러온다 (이후엔 그대로 유지)
+    f.classList.toggle('on', on);
+  });
+  document.querySelectorAll('.tab').forEach(function(b){ b.classList.toggle('on', b.dataset.k === k); });
+  document.title = TITLE[k];
+  try { localStorage.setItem('shellTab', k); } catch (e) {}
+  try { history.replaceState(null, '', '#' + k); } catch (e) {}
+}
+document.querySelectorAll('.tab').forEach(function(b){ b.onclick = function(){ show(b.dataset.k); }; });
+var h = location.hash.replace('#', '');
+var saved = ''; try { saved = localStorage.getItem('shellTab') || ''; } catch (e) {}
+show(SRC[h] ? h : (SRC[saved] ? saved : 'receipt'));
+window.addEventListener('hashchange', function(){ var k = location.hash.replace('#', ''); if (SRC[k]) show(k); });
+</script></body></html>

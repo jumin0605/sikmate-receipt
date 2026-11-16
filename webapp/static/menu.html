@@ -310,5 +310,6 @@ $('#resetfx').onclick=()=>{if(!confirm('고정품목과 설정을 초기값으�
   $('#ws').value=fd(mondayOf(today));
   $('#od').value=fd(today);setDefaultsOrder();
   renderMenu();buildOrder();
+  if(window.top!==window){const h=document.querySelector('.top h1');if(h)h.style.display='none';}
 })();
 </script></body></html>
