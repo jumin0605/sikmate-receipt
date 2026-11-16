@@ -172,6 +172,7 @@ table{border-collapse:collapse;background:#fff}
   <label>주 시작일(월요일)<input type="date" id="wk_ws"></label>
   <button class="b sub" id="wk_prev">◀ 이전 주</button><button class="b sub" id="wk_next">다음 주 ▶</button>
   <button class="b" id="wk_dl">주간 식단표·검식일지 엑셀(.xlsm) 내려받기</button>
+  <label id="wk_macrobox" style="display:none;flex-direction:row;align-items:center;gap:4px;font-size:12px;color:#555" title="내 파일 양식에 들어 있는 매크로(사진크기맞추기)를 같이 넣습니다. 인터넷에서 받은 파일이라 엑셀이 '보안 위험'으로 막을 수 있어요."><input type="checkbox" id="wk_macro"> 매크로 넣기</label>
   <span id="wk_msg" class="small" style="font-size:12.5px"></span>
  </div>
  <div class="hint">N드라이브의 주별 파일(예: <b>11월-11.16~11.22식단표_검식일지.xlsm</b>)과 같은 모양으로 만듭니다. 설정 · 식단표 · 메뉴DB · 보존식기록표 · 주간식단표(사진) · 보존식 기록지(사진) · 검식일지(월~일) 14개 시트가 들어가고, 날짜·메뉴·검사항목은 엑셀에서 열면 자동으로 채워집니다.</div>
@@ -684,7 +685,7 @@ async function wkOpen(){
 $('#wk_dl').onclick=async()=>{
   const ws=$('#wk_ws').value;if(!ws){wkMsg('주 시작일을 고르세요.',true);return;}
   const w=wkWeek(),fdat=new FormData();
-  fdat.append('data',JSON.stringify({monday:ws,days:w.days,settings:wkSettings()}));
+  fdat.append('data',JSON.stringify({monday:ws,days:w.days,settings:wkSettings(),keep_macros:!!($('#wk_macro')&&$('#wk_macro').checked)}));
   for(const k in WK.photos)fdat.append(k,WK.photos[k].blob,k+'.jpg');
   const b=$('#wk_dl');b.disabled=true;wkMsg('엑셀 만드는 중… (사진이 많으면 10초쯤 걸립니다)');
   try{
@@ -695,7 +696,7 @@ $('#wk_dl').onclick=async()=>{
     const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},2000);
     let info={};try{info=JSON.parse(decodeURIComponent(r.headers.get('X-Weekly-Info')||'%7B%7D'));}catch(_){}
     const miss=info.missing_menudb||[];
-    wkMsg(`${name} 을(를) 내려받았습니다. 사진 ${info.photos||0}장`+(miss.length?` · 메뉴DB에 없는 주메뉴: ${miss.join(', ')} (검식일지 검사항목이 비어 나옵니다)`:''),!!miss.length);
+    wkMsg(`${name} 을(를) 내려받았습니다. 사진 ${info.photos||0}장`+(info.macros_removed?' · 매크로는 빼고 만들었습니다(보안 경고 없음)':'')+(info.macros?' · 매크로 포함 (엑셀에서 막히면 파일 속성의 ‘차단 해제’를 체크하세요)':'')+(miss.length?` · 메뉴DB에 없는 주메뉴: ${miss.join(', ')} (검식일지 검사항목이 비어 나옵니다)`:''),!!miss.length);
   }catch(e){wkMsg('엑셀을 만들지 못했습니다: '+e.message,true);}
   finally{b.disabled=false;}
 };
@@ -703,8 +704,9 @@ $('#wk_dl').onclick=async()=>{
 // ---------- 내가 만든 엑셀 파일 가져오기
 WK.imp=null;
 function wkTplInfo(){
+  const mb=$('#wk_macrobox');if(mb){mb.style.display=(WK.db&&WK.db.template_vba)?'flex':'none';if(!(WK.db&&WK.db.template_vba))$('#wk_macro').checked=false;}
   const el=$('#wk_tplinfo');if(!el)return;const t=WK.db&&WK.db.template;
-  el.innerHTML=t?`지금 내려받는 엑셀 양식: <b>내 파일 양식</b> (${esc(t.name)}, ${new Date(t.saved_at*1000).toLocaleDateString('ko-KR')}) <button class="b sub" id="wk_tplreset" style="margin-left:6px;padding:3px 8px">기본 양식으로 되돌리기</button>`:'지금 내려받는 엑셀 양식: 기본 양식 (11월 주별 파일과 같은 모양)';
+  el.innerHTML=t?`지금 내려받는 엑셀 양식: <b>내 파일 양식</b> (${esc(t.name)}, ${new Date(t.saved_at*1000).toLocaleDateString('ko-KR')})${WK.db.template_vba?' · 이 양식의 매크로(사진크기맞추기)는 웹에서 받을 때 기본으로 뺍니다. 사진은 이미 칸에 맞춰 들어가서 매크로가 없어도 됩니다.':''} <button class="b sub" id="wk_tplreset" style="margin-left:6px;padding:3px 8px">기본 양식으로 되돌리기</button>`:'지금 내려받는 엑셀 양식: 기본 양식 (11월 주별 파일과 같은 모양)';
   const b=$('#wk_tplreset');if(b)b.onclick=async()=>{if(!confirm('앞으로 내려받는 엑셀을 기본 양식으로 만듭니다. 계속할까요?'))return;try{const r=await fetch('/api/weekly/template',{method:'DELETE'});if(!r.ok)throw 0;await wkLoadDb();wkTplInfo();wkRefresh();wkMsg('기본 양식으로 되돌렸습니다.');}catch(_){wkMsg('되돌리지 못했습니다.',true);}};
 }
 function wkEff(n){return WK.db?(WK.db.extra[n]||WK.db.base[n]||null):null;}
