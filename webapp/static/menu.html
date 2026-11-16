@@ -77,6 +77,15 @@ table{border-collapse:collapse;background:#fff}
 .wkslot.over{outline:3px solid #1f4e78}
 .wkslot .x{position:absolute;right:2px;top:2px;background:rgba(0,0,0,.6);color:#fff;border:0;border-radius:3px;font-size:11px;cursor:pointer;padding:0 5px}
 .wkslot .nm{position:absolute;left:0;right:0;bottom:0;background:rgba(15,23,42,.65);color:#fff;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:1px 3px}
+.wkimp{background:#fff;border:1px solid #d5dbe3;border-radius:6px;padding:10px 12px}
+.wkimp .drop{border:2px dashed #94a3b8;border-radius:8px;padding:10px;text-align:center;color:#475569;background:#f8fafc;cursor:pointer}
+.wkimp .drop.over{border-color:#1f4e78;background:#eaf4ff}
+.wkimp .prev{margin-top:10px;border-top:1px solid #e2e8f0;padding-top:10px;display:none}
+.wkimp .prev.on{display:block}
+.wkimp .opt{display:flex;align-items:flex-start;gap:6px;margin:5px 0;font-size:13px}
+.wkimp .opt input{margin-top:3px}
+.wkimp .opt .small{display:block}
+.wkimp .tpl{font-size:12px;color:#475569;margin-top:8px}
 .wkset{display:flex;flex-wrap:wrap;gap:10px;background:#fff;padding:10px 12px;border:1px solid #d5dbe3;border-radius:6px}
 .wkset label{display:flex;flex-direction:column;font-size:11px;color:#555;gap:3px}
 .wkset input{padding:5px 6px;border:1px solid #b9c2cf;border-radius:4px;font-size:13px;width:120px;font-family:inherit}
@@ -142,6 +151,13 @@ table{border-collapse:collapse;background:#fff}
   <span id="wk_msg" class="small" style="font-size:12.5px"></span>
  </div>
  <div class="hint">N드라이브의 주별 파일(예: <b>11월-11.16~11.22식단표_검식일지.xlsm</b>)과 같은 모양으로 만듭니다. 설정 · 식단표 · 메뉴DB · 보존식기록표 · 주간식단표(사진) · 보존식 기록지(사진) · 검식일지(월~일) 14개 시트가 들어가고, 날짜·메뉴·검사항목은 엑셀에서 열면 자동으로 채워집니다.</div>
+ <h3>0. 내가 만든 엑셀 파일 가져오기 <span class="small">— N드라이브의 주별 파일(.xlsm)을 넣으면 그 안의 식단·설정·메뉴DB·사진을 이 화면에 적용합니다</span></h3>
+ <div class="wkimp">
+  <div class="drop" id="wk_impdrop">엑셀 파일(.xlsm / .xlsx)을 여기에 끌어다 놓거나 눌러서 고르세요</div>
+  <input type="file" id="wk_impfile" accept=".xlsm,.xlsx" hidden>
+  <div class="prev" id="wk_impprev"></div>
+  <div class="tpl" id="wk_tplinfo"></div>
+ </div>
  <h3>1. 이 주 식단 <span class="small">(고치려면 ‘식단표’ 탭에서 고치세요. 노란 칸은 검식일지 메뉴DB에 없는 주메뉴)</span></h3>
  <table id="wk_menu"></table>
  <h3>2. 검식일지 메뉴DB <span class="small" id="wk_dbinfo"></span></h3>
@@ -561,7 +577,7 @@ $('#wk_files').onchange=e=>{const l=[...e.target.files].map(f=>({f,path:f.name})
 $('#wk_dir').onchange=e=>{const l=[...e.target.files].map(f=>({f,path:f.webkitRelativePath||f.name}));e.target.value='';if(l.length)wkAddFiles(l);};
 // 탭 안 다른 곳에 떨어뜨려도 새 창으로 열리지 않게
 document.addEventListener('dragover',e=>{if($('#tab-weekly').classList.contains('on'))e.preventDefault();});
-document.addEventListener('drop',e=>{if($('#tab-weekly').classList.contains('on')&&!e.defaultPrevented){e.preventDefault();wkDrop(e.dataTransfer);}});
+document.addEventListener('drop',e=>{if($('#tab-weekly').classList.contains('on')&&!e.defaultPrevented){e.preventDefault();const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f&&/\.xls[xm]$/i.test(f.name)){wkImport(f);return;}wkDrop(e.dataTransfer);}});
 // 설정
 function wkSettings(){const o={};WK_SET.forEach(([k,l,d])=>{const el=$('#wks_'+k);o[k]=el?el.value.trim():d;});return o;}
 function wkRenderSet(){const sv=(WK.db&&WK.db.settings)||{};$('#wk_set').innerHTML=WK_SET.map(([k,l,d])=>`<label>${l}<input id="wks_${k}" value="${esc(sv[k]||d)}"></label>`).join('');}
@@ -577,6 +593,7 @@ async function wkOpen(){
   if(!$('#wk_ws').value)$('#wk_ws').value=$('#ws').value;
   wkClearIfWeekChanged();
   if(!WK.loaded){WK.loaded=true;wkRenderSet();wkRefresh();await wkLoadDb();wkRenderSet();}
+  wkTplInfo();
   wkRefresh();
 }
 $('#wk_dl').onclick=async()=>{
@@ -597,6 +614,63 @@ $('#wk_dl').onclick=async()=>{
   }catch(e){wkMsg('엑셀을 만들지 못했습니다: '+e.message,true);}
   finally{b.disabled=false;}
 };
+
+// ---------- 내가 만든 엑셀 파일 가져오기
+WK.imp=null;
+function wkTplInfo(){
+  const el=$('#wk_tplinfo');if(!el)return;const t=WK.db&&WK.db.template;
+  el.innerHTML=t?`지금 내려받는 엑셀 양식: <b>내 파일 양식</b> (${esc(t.name)}, ${new Date(t.saved_at*1000).toLocaleDateString('ko-KR')}) <button class="b sub" id="wk_tplreset" style="margin-left:6px;padding:3px 8px">기본 양식으로 되돌리기</button>`:'지금 내려받는 엑셀 양식: 기본 양식 (11월 주별 파일과 같은 모양)';
+  const b=$('#wk_tplreset');if(b)b.onclick=async()=>{if(!confirm('앞으로 내려받는 엑셀을 기본 양식으로 만듭니다. 계속할까요?'))return;try{const r=await fetch('/api/weekly/template',{method:'DELETE'});if(!r.ok)throw 0;await wkLoadDb();wkTplInfo();wkRefresh();wkMsg('기본 양식으로 되돌렸습니다.');}catch(_){wkMsg('되돌리지 못했습니다.',true);}};
+}
+function wkEff(n){return WK.db?(WK.db.extra[n]||WK.db.base[n]||null):null;}
+async function wkImport(file){
+  if(!file)return;if(!/\.xls[xm]$/i.test(file.name)){wkMsg('.xlsm 또는 .xlsx 엑셀 파일만 넣을 수 있습니다.',true);return;}
+  const pv=$('#wk_impprev');pv.classList.add('on');pv.innerHTML='<div class="hint">파일을 읽는 중… (사진이 많으면 몇 초 걸립니다)</div>';
+  const fdat=new FormData();fdat.append('file',file);
+  try{
+    const r=await fetch('/api/weekly/import',{method:'POST',body:fdat});
+    if(!r.ok){let t='';try{t=(await r.json()).detail}catch(_){}throw new Error(t||('오류 '+r.status));}
+    const I=await r.json();I.file=file;WK.imp=I;
+    if(!WK.db)await wkLoadDb();
+    const mains=new Set();I.days.forEach(d=>['중식','석식'].forEach(m=>{if(d[m]['주메뉴'])mains.add(d[m]['주메뉴'])}));
+    const filled=I.days.reduce((a,d)=>a+['중식','석식'].reduce((b,m)=>b+ROLES.filter(x=>d[m][x]).length,0)+(d['오전']?1:0)+(d['오후']?1:0),0);
+    const dbNew=[],dbChg=[];for(const n in I.menudb){const v=I.menudb[n];if(!v.some(x=>x))continue;const cur=wkEff(n);if(!cur)dbNew.push(n);else if(cur.join('|')!==v.join('|'))dbChg.push(n);}
+    I.dbNew=dbNew;I.dbChg=dbChg;
+    const st=pd(I.monday),en=addDays(st,6),np=Object.keys(I.photos).length;
+    const curWeek=S.weeks[I.monday]&&S.weeks[I.monday].t;
+    const setTxt=Object.keys(I.settings).length?Object.entries(I.settings).map(([k,v])=>{const l=(WK_SET.find(x=>x[0]===k)||[])[1]||k;return `${l} ${esc(v)}`}).join(', '):'(없음)';
+    pv.innerHTML=`<div><b>${esc(I.filename)}</b> · 주: <b>${st.getFullYear()}년 ${md(st)} ~ ${md(en)}</b> (${esc(I.menu_sheet)})${I.warnings.length?`<div class="warn">${I.warnings.map(esc).join('<br>')}</div>`:''}</div>
+     <label class="opt"><input type="checkbox" id="wki_menu" ${filled?'checked':''} ${filled?'':'disabled'}><span>식단 ${filled}칸을 <b>식단표 탭</b>의 이 주에 적용 <span class="small">${curWeek?'⚠ 웹에 이미 저장된 이 주 식단을 파일 내용으로 바꿉니다.':'웹에는 아직 이 주 식단 수정 내용이 없습니다.'} 주메뉴: ${esc([...mains].slice(0,8).join(', '))}${mains.size>8?' …':''}</span></span></label>
+     <label class="opt"><input type="checkbox" id="wki_set" ${Object.keys(I.settings).length?'checked':'disabled'}><span>설정 적용 <span class="small">${setTxt}</span></span></label>
+     <label class="opt"><input type="checkbox" id="wki_db" ${dbNew.length+dbChg.length?'checked':'disabled'}><span>메뉴DB: 새 메뉴 ${dbNew.length}개${dbChg.length?`, 값이 다른 메뉴 ${dbChg.length}개`:''} 저장 <span class="small">${esc(dbNew.concat(dbChg).slice(0,12).join(', '))}${dbNew.length+dbChg.length>12?' …':''}${dbNew.length+dbChg.length?'':'파일의 메뉴DB가 웹과 같습니다.'}</span></span></label>
+     <label class="opt"><input type="checkbox" id="wki_ph" ${np?'checked':'disabled'}><span>사진 ${np}장을 사진 칸에 넣기 <span class="small">주간식단표(사진) → 식판 칸, 보존식 기록지(사진) → 보존식 칸${I.photos_skipped?` · 자리를 알 수 없는 그림 ${I.photos_skipped}개는 뺐습니다`:''}</span></span></label>
+     <label class="opt"><input type="checkbox" id="wki_tpl" ${I.template_ok?'':'disabled'}><span>이 파일을 <b>앞으로 내려받을 엑셀의 양식</b>으로 쓰기 <span class="small">${I.template_ok?'시트 모양·서식·수식·메뉴DB·매크로를 이 파일 그대로 쓰고, 식단·사진·메모만 비워서 저장합니다. 기본 양식으로 언제든 되돌릴 수 있습니다.':'필요한 시트가 없어 양식으로 쓸 수 없습니다: '+esc(I.missing_sheets.join(', '))}</span></span></label>
+     <div style="margin-top:8px"><button class="b" id="wki_apply">적용</button> <button class="b sub" id="wki_cancel">취소</button></div>`;
+    $('#wki_apply').onclick=wkApplyImport;$('#wki_cancel').onclick=()=>{WK.imp=null;pv.classList.remove('on');pv.innerHTML='';};
+  }catch(e){pv.innerHTML=`<div class="warn">파일을 읽지 못했습니다: ${esc(e.message)}</div>`;}
+}
+async function wkApplyImport(){
+  const I=WK.imp;if(!I)return;const on=id=>{const el=$('#'+id);return el&&el.checked&&!el.disabled;};
+  const b=$('#wki_apply');b.disabled=true;const done=[],fail=[];
+  try{
+    if(on('wki_menu')){const w=ensureWeek(I.monday);w.days=I.days.map(d=>({중식:Object.assign({},d['중식']),석식:Object.assign({},d['석식']),오전:d['오전']||'',오후:d['오후']||''}));w.t=Date.now();save();if($('#ws').value===I.monday)renderMenu();done.push('식단');}
+    if(on('wki_set')){const s2=Object.assign({},(WK.db&&WK.db.settings)||{},I.settings);try{const r=await fetch('/api/weekly/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({settings:s2})});if(!r.ok)throw 0;if(WK.db)WK.db.settings=s2;wkRenderSet();done.push('설정');}catch(_){fail.push('설정');}}
+    if(on('wki_db')){let n=0;for(const name of I.dbNew.concat(I.dbChg)){try{const r=await fetch('/api/weekly/menudb',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,values:I.menudb[name]})});if(!r.ok)throw 0;if(WK.db)WK.db.extra[name]=I.menudb[name];n++;}catch(_){}}
+      if(n)done.push(`메뉴DB ${n}개`);if(n<I.dbNew.length+I.dbChg.length)fail.push(`메뉴DB ${I.dbNew.length+I.dbChg.length-n}개`);}
+    $('#wk_ws').value=I.monday;wkClearIfWeekChanged();
+    if(on('wki_ph')){let n=0;for(const slot in I.photos){const blob=await (await fetch('data:image/jpeg;base64,'+I.photos[slot])).blob();wkSetPhoto(slot,blob,'엑셀 파일 사진','manual');n++;}done.push(`사진 ${n}장`);}
+    if(on('wki_tpl')){try{const fd2=new FormData();fd2.append('file',I.file);const r=await fetch('/api/weekly/template',{method:'POST',body:fd2});if(!r.ok){let t='';try{t=(await r.json()).detail}catch(_){}throw new Error(t);}await wkLoadDb();done.push('양식');}catch(e){fail.push('양식'+(e.message?'('+e.message+')':''));}}
+    wkRefresh();wkTplInfo();
+    $('#wk_impprev').innerHTML=`<div class="hint" style="color:#1f4e78"><b>${esc(I.filename)}</b> 적용 완료: ${done.join(', ')||'고른 항목 없음'}${fail.length?` · <span style="color:#c0392b">실패: ${fail.join(', ')}</span>`:''}</div>`;
+    WK.imp=null;wkMsg('엑셀 파일 내용을 적용했습니다.'+(fail.length?' 일부는 실패했습니다.':''),!!fail.length);
+  }finally{if(b)b.disabled=false;}
+}
+const wki=$('#wk_impdrop');
+wki.onclick=()=>$('#wk_impfile').click();
+$('#wk_impfile').onchange=e=>{const f=e.target.files[0];e.target.value='';wkImport(f);};
+['dragenter','dragover'].forEach(t=>wki.addEventListener(t,e=>{e.preventDefault();e.stopPropagation();wki.classList.add('over');}));
+['dragleave'].forEach(t=>wki.addEventListener(t,e=>{wki.classList.remove('over');}));
+wki.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();wki.classList.remove('over');const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)wkImport(f);});
 // ---------- init
 (function(){
   const today=new Date();
