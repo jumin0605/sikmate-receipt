@@ -36,8 +36,8 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import Cookie, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import Cookie, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
@@ -606,6 +606,132 @@ def menu_state_put(body: MenuStateIn, rc_auth: str | None = Cookie(default=None)
             shutil.copyfile(p, p.with_suffix(".bak"))
         os.replace(tmp, p)
     return {"rev": new["rev"], "saved_at": new["saved_at"], "persistent": MENU_STORE_PERSISTENT}
+
+
+# ---------------------------------------------------------------------------
+# 주간 식단표·검식일지 엑셀(.xlsm) — 신태양 주별 파일과 같은 모양으로 만들어 내려준다
+#   메뉴DB 추가분과 설정은 MENU_STORE_DIR/weekly_book.json 에 남긴다 (영구 디스크)
+# ---------------------------------------------------------------------------
+import weekly_book  # noqa: E402
+
+WEEKLY_MAX_PHOTOS = 28
+WEEKLY_MAX_PHOTO_MB = 8
+
+
+def _weekly_store_path() -> Path:
+    return MENU_STORE_DIR / "weekly_book.json"
+
+
+def _weekly_store_read() -> dict:
+    p = _weekly_store_path()
+    if p.is_file():
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(d, dict):
+                d.setdefault("menus", {})
+                d.setdefault("settings", {})
+                return d
+        except Exception:
+            pass
+    return {"menus": {}, "settings": {}}
+
+
+def _weekly_store_write(d: dict):
+    MENU_STORE_DIR.mkdir(parents=True, exist_ok=True)
+    p = _weekly_store_path()
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    if p.is_file():
+        shutil.copyfile(p, p.with_suffix(".bak"))
+    os.replace(tmp, p)
+
+
+class WeeklyMenuIn(BaseModel):
+    name: str
+    values: list[str] = []
+    delete: bool = False
+
+
+class WeeklySettingsIn(BaseModel):
+    settings: dict
+
+
+@app.get("/api/weekly/menudb")
+def weekly_menudb(rc_auth: str | None = Cookie(default=None)):
+    _check_auth(rc_auth)
+    with _menu_lock:
+        st = _weekly_store_read()
+    return JSONResponse({"cols": weekly_book.DB_COLS, "base": weekly_book.template_menudb(), "extra": st["menus"],
+                         "settings": st["settings"], "persistent": MENU_STORE_PERSISTENT},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.put("/api/weekly/menudb")
+def weekly_menudb_put(body: WeeklyMenuIn, rc_auth: str | None = Cookie(default=None)):
+    _check_auth(rc_auth)
+    name = re.sub(r"\s+", " ", body.name or "").strip()[:60]
+    if not name:
+        raise HTTPException(400, "메뉴 이름이 비었습니다.")
+    vals = [re.sub(r"\s+", " ", str(v or "")).strip()[:60] for v in (body.values or [])][:11]
+    vals += [""] * (11 - len(vals))
+    with _menu_lock:
+        st = _weekly_store_read()
+        if body.delete:
+            st["menus"].pop(name, None)
+        else:
+            if len(st["menus"]) >= 2000 and name not in st["menus"]:
+                raise HTTPException(413, "메뉴가 너무 많습니다.")
+            st["menus"][name] = vals
+        _weekly_store_write(st)
+    return {"ok": True, "count": len(st["menus"])}
+
+
+@app.put("/api/weekly/settings")
+def weekly_settings_put(body: WeeklySettingsIn, rc_auth: str | None = Cookie(default=None)):
+    _check_auth(rc_auth)
+    keep = {k: str(v)[:40] for k, v in (body.settings or {}).items() if k in weekly_book.SETTING_CELLS}
+    with _menu_lock:
+        st = _weekly_store_read()
+        st["settings"] = keep
+        _weekly_store_write(st)
+    return {"ok": True}
+
+
+@app.post("/api/weekly/xlsm")
+async def weekly_xlsm(request: Request, rc_auth: str | None = Cookie(default=None)):
+    _check_auth(rc_auth)
+    form = await request.form()
+    try:
+        data = json.loads(form.get("data") or "{}")
+        monday = weekly_book.parse_monday(data.get("monday", ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e) or "주 시작일이 잘못됐습니다.")
+    except Exception:
+        raise HTTPException(400, "보낸 내용을 읽지 못했습니다.")
+    photos = {}
+    for key, val in form.multi_items():
+        if not weekly_book.PHOTO_SLOT_RE.match(key) or not hasattr(val, "read"):
+            continue
+        if len(photos) >= WEEKLY_MAX_PHOTOS:
+            break
+        b = await val.read()
+        if len(b) > WEEKLY_MAX_PHOTO_MB * 1024 * 1024:
+            raise HTTPException(413, "사진 한 장이 너무 큽니다.")
+        photos[key] = b
+    with _menu_lock:
+        st = _weekly_store_read()
+    settings = {**st["settings"], **{k: v for k, v in (data.get("settings") or {}).items() if k in weekly_book.SETTING_CELLS}}
+    try:
+        name, blob, info = weekly_book.build_weekly(monday, data.get("days") or [], settings, st["menus"], photos)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    from urllib.parse import quote
+    return Response(blob, media_type="application/vnd.ms-excel.sheet.macroEnabled.12", headers={
+        "Content-Disposition": f"attachment; filename=\"weekly.xlsm\"; filename*=UTF-8''{quote(name)}",
+        "X-Weekly-Info": quote(json.dumps(info, ensure_ascii=False)),
+        "Access-Control-Expose-Headers": "X-Weekly-Info, Content-Disposition",
+        "Cache-Control": "no-store",
+    })
 
 
 @app.post("/api/jobs")
