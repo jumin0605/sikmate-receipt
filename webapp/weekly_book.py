@@ -614,3 +614,44 @@ def strip_vba(data: bytes) -> bytes:
                 b = t.encode("utf-8")
             zout.writestr(info, b)
     return out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# 검수서(원산지 표시) 엑셀에서 사진 이름 읽기 → 발주서 비고 채우기에 쓴다
+# ---------------------------------------------------------------------------
+_TITLE_DATE_RE = re.compile(r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+
+
+def read_inspection_names(data: bytes, filename: str = "") -> dict:
+    """'식자재 검수서 원산지 표시  2026년 11월 16일' 제목과 사진 위 이름들('느타리버섯 26.11.16 국내산')을 읽는다."""
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception:
+        raise ValueError("엑셀 파일을 열지 못했습니다.")
+    day, names = "", []
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                v = c.value
+                if not isinstance(v, str) or not v.strip():
+                    continue
+                t = re.sub(r"\s+", " ", v).strip()
+                if "검수서" in t or "원산지 표시" in t:
+                    m = _TITLE_DATE_RE.search(t)
+                    if m and not day:
+                        day = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                    continue
+                names.append(t[:80])
+        if names:
+            break
+    wb.close()
+    if not day:
+        m = re.search(r"(\d{2})[._-]?(\d{2})[._-]?(\d{2})", filename or "")
+        m2 = _TITLE_DATE_RE.search(filename or "")
+        if m2:
+            day = f"{m2.group(1)}-{int(m2.group(2)):02d}-{int(m2.group(3)):02d}"
+        elif m:
+            day = f"20{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    if not names:
+        raise ValueError("검수서에서 사진 이름을 찾지 못했습니다. (식자재 검수서 원산지 표시 엑셀인지 확인해 주세요)")
+    return {"date": day, "names": names[:300]}

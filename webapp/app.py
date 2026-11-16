@@ -764,6 +764,17 @@ def weekly_template_reset(rc_auth: str | None = Cookie(default=None)):
     return {"ok": True}
 
 
+@app.post("/api/order/inspection-names")
+async def order_inspection_names(request: Request, rc_auth: str | None = Cookie(default=None)):
+    """검수서(원산지 표시) 엑셀의 사진 이름을 읽어 준다. 발주서 비고 채우기용 (저장하지 않음)."""
+    _check_auth(rc_auth)
+    b, name, _ = await _read_upload(request)
+    try:
+        return JSONResponse(weekly_book.read_inspection_names(b, name), headers={"Cache-Control": "no-store"})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @app.post("/api/weekly/xlsm")
 async def weekly_xlsm(request: Request, rc_auth: str | None = Cookie(default=None)):
     _check_auth(rc_auth)

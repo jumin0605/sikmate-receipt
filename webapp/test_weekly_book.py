@@ -126,5 +126,17 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(rows, sorted(b["row"] for b in kl.values()))
 
 
+class InspectionNamesTest(unittest.TestCase):
+    def test_reads_title_date_and_names(self):
+        book = openpyxl.Workbook()
+        ws = book.active
+        ws["A1"] = "식자재 검수서 원산지 표시  2026년 11월 16일"
+        ws["A3"], ws["B3"], ws["C3"] = "참치액 28.04.12", "느타리버섯 26.11.16 국내산", "두부 26.11.27 인도산"
+        buf = io.BytesIO(); book.save(buf)
+        info = wb.read_inspection_names(buf.getvalue(), "원산지 표시_26.11.16.xlsx")
+        self.assertEqual(info["date"], "2026-11-16")
+        self.assertEqual(info["names"], ["참치액 28.04.12", "느타리버섯 26.11.16 국내산", "두부 26.11.27 인도산"])
+
+
 if __name__ == "__main__":
     unittest.main()
