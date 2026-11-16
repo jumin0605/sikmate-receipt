@@ -22,18 +22,20 @@ iframe.on{display:block}
   <a class="logo" href="/" target="_top"><i>식</i>식담온</a>
   <button class="tab" data-k="receipt">영수증 정리</button>
   <button class="tab" data-k="menu">신태양 식단표 · 발주서</button>
+  <button class="tab" data-k="photo">식단 사진</button>
   <span class="sp"></span>
   <a class="sm" href="/" target="_top">소개</a>
 </div>
 <div class="frames">
   <iframe id="f-receipt" title="영수증 정리"></iframe>
   <iframe id="f-menu" title="신태양 식단표 발주서 생성기"></iframe>
+  <iframe id="f-photo" title="식단 사진 정리"></iframe>
 </div>
 <script>
 // 만료된 세션 등으로 이 화면이 다른 화면 안에 겹쳐 열리면 맨 위로 빠져나온다
 if (window.top !== window) { window.top.location.href = location.href; }
-var SRC = { receipt: '/app/receipt', menu: '/menu' };
-var TITLE = { receipt: '식담온 · 영수증 정리', menu: '식담온 · 신태양 식단표·발주서' };
+var SRC = { receipt: '/app/receipt', menu: '/menu', photo: '/photo' };
+var TITLE = { receipt: '식담온 · 영수증 정리', menu: '식담온 · 신태양 식단표·발주서', photo: '식담온 · 식단 사진' };
 function fixLinks(f){
   try {
     f.contentDocument.querySelectorAll('a[href="/"]').forEach(function(a){ a.target = '_top'; });
