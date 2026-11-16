@@ -24,6 +24,10 @@ from openpyxl.utils import get_column_letter
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "weekly_template.xlsm"
 TEMPLATE_MENU_SHEET = "11월 식단표"
+# 사용자가 올린 엑셀을 양식으로 쓰기로 하면 여기에 저장된다 (app.py 가 영구 디스크 경로로 정해 준다)
+CUSTOM_TEMPLATE: Path | None = None
+REQUIRED_SHEETS = ["설정", "메뉴DB", "주간식단표(사진)", "보존식 기록지(사진)"]
+
 
 ROLES = ["밥", "국", "주메뉴", "조림볶음", "무침", "김치"]
 MEALS = ["중식", "석식"]
@@ -59,8 +63,23 @@ def output_name(monday: date) -> str:
     return f"{monday.month}월-{monday.month}.{monday.day:02d}~{sun.month}.{sun.day:02d}식단표_검식일지.xlsm"
 
 
+def active_template() -> Path:
+    if CUSTOM_TEMPLATE is not None and Path(CUSTOM_TEMPLATE).is_file():
+        return Path(CUSTOM_TEMPLATE)
+    return TEMPLATE
+
+
+def find_menu_sheet(wb) -> str:
+    """'11월 식단표' 처럼 이름이 '식단표'로 끝나는 입력 시트 (주간식단표(사진)은 제외)."""
+    for name in wb.sheetnames:
+        n = name.strip()
+        if n.endswith("식단표") and "주간" not in n and "사진" not in n:
+            return name
+    raise ValueError("식단표 시트(예: 11월 식단표)를 찾지 못했습니다.")
+
+
 def template_menudb() -> dict[str, list[str]]:
-    wb = openpyxl.load_workbook(TEMPLATE, read_only=True)
+    wb = openpyxl.load_workbook(active_template(), read_only=True)
     ws = wb["메뉴DB"]
     out: dict[str, list[str]] = {}
     for i, r in enumerate(ws.iter_rows(values_only=True)):
@@ -121,7 +140,7 @@ def _place_photo(ws, data: bytes, row: int, col_from: int, col_to: int, pad: int
 
 
 def _rename_menu_sheet(wb, new_title: str):
-    old = TEMPLATE_MENU_SHEET
+    old = find_menu_sheet(wb)
     if new_title == old:
         return
     wb[old].title = new_title
@@ -148,7 +167,7 @@ def build_weekly(monday: date, days: list, settings: dict | None = None,
     if not isinstance(days, list) or len(days) != 7:
         raise ValueError("7일치 식단이 필요합니다.")
 
-    wb = openpyxl.load_workbook(TEMPLATE, keep_vba=True)
+    wb = openpyxl.load_workbook(active_template(), keep_vba=True)
     sheet_title = f"{monday.month}월 식단표"
     _rename_menu_sheet(wb, sheet_title)
 
@@ -229,3 +248,238 @@ def build_weekly(monday: date, days: list, settings: dict | None = None,
     buf = io.BytesIO()
     wb.save(buf)
     return output_name(monday), buf.getvalue(), {"missing_menudb": missing, "photos": len(placed), "bad_photos": bad}
+
+
+# ---------------------------------------------------------------------------
+# 사용자가 만든 주별 엑셀 가져오기
+# ---------------------------------------------------------------------------
+def _sheet_col_edges(ws, upto: int = 30) -> list[int]:
+    edges = [0]
+    for c in range(1, upto + 1):
+        edges.append(edges[-1] + _col_px(ws, c))
+    return edges
+
+
+def _sheet_row_edges(ws, upto: int) -> list[int]:
+    edges = [0]
+    for r in range(1, upto + 1):
+        edges.append(edges[-1] + _row_px(ws, r))
+    return edges
+
+
+def _image_center(img, cols: list[int], rows: list[int]):
+    """그림의 가운데 위치(px). 열·행 번호는 1부터."""
+    a = img.anchor
+    fr = getattr(a, "_from", None)
+    if fr is None:
+        return None
+    x1 = cols[min(fr.col, len(cols) - 1)] + (fr.colOff or 0) / EMU_PER_PX
+    y1 = rows[min(fr.row, len(rows) - 1)] + (fr.rowOff or 0) / EMU_PER_PX
+    to = getattr(a, "to", None)
+    ext = getattr(a, "ext", None)
+    if to is not None:
+        x2 = cols[min(to.col, len(cols) - 1)] + (to.colOff or 0) / EMU_PER_PX
+        y2 = rows[min(to.row, len(rows) - 1)] + (to.rowOff or 0) / EMU_PER_PX
+    elif ext is not None:
+        x2 = x1 + (ext.width or 0) / EMU_PER_PX
+        y2 = y1 + (ext.height or 0) / EMU_PER_PX
+    else:
+        x2, y2 = x1 + (img.width or 0), y1 + (img.height or 0)
+    return (x1 + x2) / 2, (y1 + y2) / 2
+
+
+def _locate(edges: list[int], v: float) -> int:
+    for i in range(1, len(edges)):
+        if v < edges[i]:
+            return i
+    return len(edges)
+
+
+def _small_jpeg(data: bytes, side: int = 900) -> bytes | None:
+    from PIL import Image as PILImage, ImageOps
+    try:
+        im = PILImage.open(io.BytesIO(data))
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        im.thumbnail((side, side))
+        b = io.BytesIO()
+        im.save(b, "JPEG", quality=85)
+        return b.getvalue()
+    except Exception:
+        return None
+
+
+def _photos_from(wb) -> tuple[dict, int]:
+    """주간식단표(사진)·보존식 기록지(사진) 시트의 그림을 칸(d0_lunch_tray 등)으로 나눈다."""
+    out, skipped = {}, 0
+    if "주간식단표(사진)" in wb.sheetnames:
+        ws = wb["주간식단표(사진)"]
+        cols, rows = _sheet_col_edges(ws, 10), _sheet_row_edges(ws, 20)
+        for img in ws._images:
+            c = _image_center(img, cols, rows)
+            if not c:
+                skipped += 1
+                continue
+            col, row = _locate(cols, c[0]), _locate(rows, c[1])
+            di = row - 3
+            if not 0 <= di <= 6:
+                skipped += 1
+                continue
+            meal = "lunch" if col <= 3 else "dinner"
+            slot = f"d{di}_{meal}_tray"
+            if slot in out:
+                skipped += 1
+                continue
+            out[slot] = img
+    if "보존식 기록지(사진)" in wb.sheetnames:
+        ws = wb["보존식 기록지(사진)"]
+        cols, rows = _sheet_col_edges(ws, 10), _sheet_row_edges(ws, 150)
+        for img in ws._images:
+            c = _image_center(img, cols, rows)
+            if not c:
+                skipped += 1
+                continue
+            row = _locate(rows, c[1])
+            block = (row - 3) // 10
+            if not 0 <= block <= 13:
+                skipped += 1
+                continue
+            slot = f"d{block // 2}_{'lunch' if block % 2 == 0 else 'dinner'}_keep"
+            if slot in out:
+                skipped += 1
+                continue
+            out[slot] = img
+    photos = {}
+    for slot, img in out.items():
+        try:
+            data = img._data()
+        except Exception:
+            data = None
+        small = _small_jpeg(data) if data else None
+        if small:
+            photos[slot] = small
+        else:
+            skipped += 1
+    return photos, skipped
+
+
+def _date_from_filename(name: str) -> date | None:
+    m = re.search(r"(\d{1,2})\.(\d{1,2})\s*~", name or "")
+    if not m:
+        return None
+    today = date.today()
+    for y in (today.year, today.year - 1, today.year + 1):
+        try:
+            d = date(y, int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            continue
+        if d.weekday() == 0 and abs((d - today).days) < 200:
+            return d
+    return None
+
+
+def _txt(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, str) and v.startswith("="):
+        return ""
+    return _clean(v)
+
+
+def read_weekly(data: bytes, filename: str = "", with_photos: bool = True) -> dict:
+    """사용자가 만든 주별 엑셀에서 주 시작일·식단·설정·메뉴DB·사진을 읽는다."""
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data))
+    except Exception:
+        raise ValueError("엑셀 파일을 열지 못했습니다. (.xlsm / .xlsx 파일인지 확인해 주세요)")
+    warnings = []
+    menu_name = find_menu_sheet(wb)
+    ms = wb[menu_name]
+    monday = None
+    if "설정" in wb.sheetnames:
+        v = wb["설정"]["B3"].value
+        if isinstance(v, datetime):
+            monday = v.date()
+        elif isinstance(v, date):
+            monday = v
+    if monday is None:
+        monday = _date_from_filename(filename)
+        if monday:
+            warnings.append("설정 시트에서 주 시작일을 못 읽어 파일 이름의 날짜를 썼습니다.")
+    if monday is None:
+        raise ValueError("주 시작일(설정 시트 B3 또는 파일 이름의 날짜)을 찾지 못했습니다.")
+    if monday.weekday() != 0:
+        monday = monday - timedelta(days=monday.weekday())
+        warnings.append("주 시작일이 월요일이 아니라서 그 주 월요일로 맞췄습니다.")
+
+    days = []
+    for di in range(7):
+        col = 2 + di
+        d = {}
+        for mi, meal in enumerate(MEALS):
+            d[meal] = {role: _txt(ms.cell(5 + mi * 6 + ri, col).value) for ri, role in enumerate(ROLES)}
+        d["오전"] = _txt(ms.cell(17, col).value)
+        d["오후"] = _txt(ms.cell(18, col).value)
+        days.append(d)
+
+    settings = {}
+    if "설정" in wb.sheetnames:
+        st = wb["설정"]
+        for key, cell in SETTING_CELLS.items():
+            v = st[cell].value
+            if v is not None and not (isinstance(v, str) and v.startswith("=")):
+                settings[key] = _clean(v)
+
+    menudb = {}
+    if "메뉴DB" in wb.sheetnames:
+        for i, r in enumerate(wb["메뉴DB"].iter_rows(values_only=True)):
+            if i == 0 or not r or not r[0] or not str(r[0]).strip():
+                continue
+            vals = [("" if v is None else _clean(v)) for v in list(r[1:12])]
+            vals += [""] * (11 - len(vals))
+            menudb[_clean(r[0])] = vals
+
+    photos, skipped = (_photos_from(wb) if with_photos else ({}, 0))
+    missing_sheets = [n for n in REQUIRED_SHEETS if n not in wb.sheetnames]
+    return {
+        "monday": monday.isoformat(),
+        "menu_sheet": menu_name,
+        "days": days,
+        "settings": settings,
+        "menudb": menudb,
+        "photos": photos,
+        "photos_skipped": skipped,
+        "sheets": wb.sheetnames,
+        "template_ok": not missing_sheets,
+        "missing_sheets": missing_sheets,
+        "warnings": warnings,
+    }
+
+
+def make_template(data: bytes) -> bytes:
+    """사용자 엑셀을 앞으로 쓸 양식으로 만든다: 메뉴·메모·사진만 비우고 나머지(서식·수식·메뉴DB)는 그대로."""
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), keep_vba=True)
+    except Exception:
+        raise ValueError("엑셀 파일을 열지 못했습니다.")
+    missing = [n for n in REQUIRED_SHEETS if n not in wb.sheetnames]
+    if missing:
+        raise ValueError("양식으로 쓰려면 이 시트가 있어야 합니다: " + ", ".join(missing))
+    ms = wb[find_menu_sheet(wb)]
+    for r in range(5, 19):
+        for c in range(2, 9):
+            ms.cell(r, c).value = None
+    for r in range(1, 19):
+        for c in range(10, 15):
+            ms.cell(r, c).value = None
+    pw = wb["주간식단표(사진)"]
+    pw._images = []
+    for r in range(3, 10):
+        for c in (3, 5):
+            v = pw.cell(r, c).value
+            if not (isinstance(v, str) and v.startswith("=")):
+                pw.cell(r, c).value = None
+    wb["보존식 기록지(사진)"]._images = []
+    wb.calculation.fullCalcOnLoad = True
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

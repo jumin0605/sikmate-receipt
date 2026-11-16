@@ -616,6 +616,8 @@ import weekly_book  # noqa: E402
 
 WEEKLY_MAX_PHOTOS = 28
 WEEKLY_MAX_PHOTO_MB = 8
+WEEKLY_MAX_IMPORT_MB = 40
+weekly_book.CUSTOM_TEMPLATE = MENU_STORE_DIR / "weekly_template_custom.xlsm"
 
 
 def _weekly_store_path() -> Path:
@@ -662,7 +664,8 @@ def weekly_menudb(rc_auth: str | None = Cookie(default=None)):
     with _menu_lock:
         st = _weekly_store_read()
     return JSONResponse({"cols": weekly_book.DB_COLS, "base": weekly_book.template_menudb(), "extra": st["menus"],
-                         "settings": st["settings"], "persistent": MENU_STORE_PERSISTENT},
+                         "settings": st["settings"], "persistent": MENU_STORE_PERSISTENT,
+                         "template": st.get("template") if weekly_book.active_template() != weekly_book.TEMPLATE else None},
                         headers={"Cache-Control": "no-store"})
 
 
@@ -693,6 +696,69 @@ def weekly_settings_put(body: WeeklySettingsIn, rc_auth: str | None = Cookie(def
     with _menu_lock:
         st = _weekly_store_read()
         st["settings"] = keep
+        _weekly_store_write(st)
+    return {"ok": True}
+
+
+async def _read_upload(request: Request) -> tuple[bytes, str, dict]:
+    form = await request.form()
+    f = form.get("file")
+    if f is None or not hasattr(f, "read"):
+        raise HTTPException(400, "엑셀 파일을 골라 주세요.")
+    name = getattr(f, "filename", "") or ""
+    if not name.lower().endswith((".xlsm", ".xlsx")):
+        raise HTTPException(400, ".xlsm 또는 .xlsx 엑셀 파일만 넣을 수 있습니다.")
+    b = await f.read()
+    if len(b) > WEEKLY_MAX_IMPORT_MB * 1024 * 1024:
+        raise HTTPException(413, f"파일이 너무 큽니다 ({WEEKLY_MAX_IMPORT_MB}MB까지).")
+    return b, name, form
+
+
+@app.post("/api/weekly/import")
+async def weekly_import(request: Request, rc_auth: str | None = Cookie(default=None)):
+    """사용자가 만든 주별 엑셀을 읽어 식단·설정·메뉴DB·사진을 돌려준다 (저장은 화면에서 고른 것만)."""
+    _check_auth(rc_auth)
+    b, name, _ = await _read_upload(request)
+    import base64
+    try:
+        info = weekly_book.read_weekly(b, name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    info["photos"] = {k: base64.b64encode(v).decode() for k, v in info["photos"].items()}
+    info["filename"] = name
+    return JSONResponse(info, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/weekly/template")
+async def weekly_template_set(request: Request, rc_auth: str | None = Cookie(default=None)):
+    """올린 엑셀을 앞으로 내려받을 주간 엑셀의 양식으로 쓴다."""
+    _check_auth(rc_auth)
+    b, name, _ = await _read_upload(request)
+    try:
+        tpl = weekly_book.make_template(b)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    with _menu_lock:
+        MENU_STORE_DIR.mkdir(parents=True, exist_ok=True)
+        p = Path(weekly_book.CUSTOM_TEMPLATE)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_bytes(tpl)
+        os.replace(tmp, p)
+        st = _weekly_store_read()
+        st["template"] = {"name": name, "saved_at": time.time()}
+        _weekly_store_write(st)
+    return {"ok": True, "template": st["template"]}
+
+
+@app.delete("/api/weekly/template")
+def weekly_template_reset(rc_auth: str | None = Cookie(default=None)):
+    _check_auth(rc_auth)
+    with _menu_lock:
+        p = Path(weekly_book.CUSTOM_TEMPLATE)
+        if p.is_file():
+            p.unlink()
+        st = _weekly_store_read()
+        st.pop("template", None)
         _weekly_store_write(st)
     return {"ok": True}
 

@@ -67,5 +67,25 @@ class WeeklyBookTest(unittest.TestCase):
         self.assertEqual(book["검식일지(월)"]["B11"].value, "=IF('12월 식단표'!B$7=\"\",\"\",'12월 식단표'!B$7)")
 
 
+class ImportTest(unittest.TestCase):
+    def test_read_back_and_template(self):
+        days = _days()
+        _, data, _ = wb.build_weekly(date(2026, 11, 23), days, {"inspector": "홍길동"}, {}, {"d2_dinner_tray": _jpg(), "d3_lunch_keep": _jpg()})
+        info = wb.read_weekly(data, "x.xlsm")
+        self.assertEqual(info["monday"], "2026-11-23")
+        self.assertEqual(info["days"][0]["중식"]["주메뉴"], "제육볶음")
+        self.assertEqual(info["days"][6]["오후"], "요플레")
+        self.assertEqual(info["settings"]["inspector"], "홍길동")
+        self.assertEqual(sorted(info["photos"]), ["d2_dinner_tray", "d3_lunch_keep"])
+        self.assertTrue(info["template_ok"])
+        tpl = wb.make_template(data)
+        book = openpyxl.load_workbook(io.BytesIO(tpl))
+        self.assertIsNone(book["11월 식단표"]["B7"].value)
+        self.assertEqual(len(book["주간식단표(사진)"]._images), 0)
+
+    def test_bad_file(self):
+        with self.assertRaises(ValueError):
+            wb.read_weekly(b"not an excel", "x.xlsm")
+
 if __name__ == "__main__":
     unittest.main()
