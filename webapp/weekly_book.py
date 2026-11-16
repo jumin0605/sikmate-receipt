@@ -230,18 +230,20 @@ def build_weekly(monday: date, days: list, settings: dict | None = None,
     # 사진
     pw = wb["주간식단표(사진)"]
     pk = wb["보존식 기록지(사진)"]
+    tl, kl = tray_layout(pw), keep_layout(pk)
+    _clear_photo_cells(pw, tl)
+    _clear_photo_cells(pk, kl)
     placed, bad = [], []
     for slot, data in photos.items():
         m = PHOTO_SLOT_RE.match(slot)
         if not m or not data:
             continue
-        di, meal, kind = int(m.group(1)), m.group(2), m.group(3)
+        box = (tl if m.group(3) == "tray" else kl).get(slot)
+        if not box:
+            bad.append(slot)
+            continue
         try:
-            if kind == "tray":
-                _place_photo(pw, data, 3 + di, 3 if meal == "lunch" else 5, 3 if meal == "lunch" else 5)
-            else:
-                block = di * 2 + (0 if meal == "lunch" else 1)
-                _place_photo(pk, data, 4 + block * 10, 2, 3)
+            _place_photo(pw if m.group(3) == "tray" else pk, data, box["row"], box["c1"], box["c2"])
             placed.append(slot)
         except Exception:
             bad.append(slot)
@@ -320,18 +322,22 @@ def _photos_from(wb) -> tuple[dict, int]:
     out, skipped = {}, 0
     if "주간식단표(사진)" in wb.sheetnames:
         ws = wb["주간식단표(사진)"]
-        cols, rows = _sheet_col_edges(ws, 10), _sheet_row_edges(ws, 20)
+        tl = tray_layout(ws)
+        cols, rows = _sheet_col_edges(ws, 12), _sheet_row_edges(ws, 30)
+        lunch_c = min(b["c1"] for k, b in tl.items() if "_lunch_" in k)
+        dinner_c = min(b["c1"] for k, b in tl.items() if "_dinner_" in k)
+        split = cols[lunch_c]           # 점심 사진 열의 오른쪽 끝
         for img in ws._images:
             c = _image_center(img, cols, rows)
             if not c:
                 skipped += 1
                 continue
-            col, row = _locate(cols, c[0]), _locate(rows, c[1])
-            di = row - 3
-            if not 0 <= di <= 6:
+            row = _locate(rows, c[1])
+            di = next((int(k[1]) for k, b in tl.items() if b["row"] == row), None)
+            if di is None:
                 skipped += 1
                 continue
-            meal = "lunch" if col <= 3 else "dinner"
+            meal = "lunch" if c[0] < split else "dinner"
             slot = f"d{di}_{meal}_tray"
             if slot in out:
                 skipped += 1
@@ -339,19 +345,20 @@ def _photos_from(wb) -> tuple[dict, int]:
             out[slot] = img
     if "보존식 기록지(사진)" in wb.sheetnames:
         ws = wb["보존식 기록지(사진)"]
-        cols, rows = _sheet_col_edges(ws, 10), _sheet_row_edges(ws, 150)
+        kl = keep_layout(ws)
+        cols, rows = _sheet_col_edges(ws, 12), _sheet_row_edges(ws, (ws.max_row or 150) + 10)
+        blocks = sorted(((b["title"], k) for k, b in kl.items()))
         for img in ws._images:
             c = _image_center(img, cols, rows)
-            if not c:
+            if not c or not blocks:
                 skipped += 1
                 continue
             row = _locate(rows, c[1])
-            block = (row - 3) // 10
-            if not 0 <= block <= 13:
-                skipped += 1
-                continue
-            slot = f"d{block // 2}_{'lunch' if block % 2 == 0 else 'dinner'}_keep"
-            if slot in out:
+            slot = None
+            for t_row, k in blocks:          # 그림 가운데가 들어 있는 블록 (제목 행 ~ 다음 제목 행 전)
+                if row >= t_row:
+                    slot = k
+            if slot is None or slot in out:
                 skipped += 1
                 continue
             out[slot] = img
@@ -367,6 +374,90 @@ def _photos_from(wb) -> tuple[dict, int]:
         else:
             skipped += 1
     return photos, skipped
+
+
+# ---------------------------------------------------------------------------
+# 사진 칸 위치 찾기 (양식마다 행이 다를 수 있어서 시트 내용으로 찾는다)
+# ---------------------------------------------------------------------------
+DAY_NAMES = ["월", "화", "수", "목", "금", "토", "일"]
+_DAY_COL_RE = re.compile(r"식단표'?!\$?([B-H])\$?2\b")
+
+
+def _merged_span(ws, row: int, col: int) -> tuple[int, int]:
+    for m in ws.merged_cells.ranges:
+        if m.min_row <= row <= m.max_row and m.min_col <= col <= m.max_col:
+            return m.min_col, m.max_col
+    return col, col
+
+
+def keep_layout(ws) -> dict:
+    """보존식 기록지(사진): 칸 이름 -> {title, row, c1, c2}.
+    '...식단표'!X$2 ... " 중식"/" 석식" 제목 수식으로 날짜·끼니를 알아내고, 그 아래 메뉴 칸 옆을 사진 칸으로 본다."""
+    out = {}
+    for row in ws.iter_rows():
+        for cell in row:
+            v = cell.value
+            if not (isinstance(v, str) and v.startswith("=")):
+                continue
+            meal = "lunch" if "중식" in v else ("dinner" if "석식" in v else None)
+            m = _DAY_COL_RE.search(v)
+            if not meal or not m or "MID(" in v:
+                continue
+            di = ord(m.group(1)) - ord("B")
+            slot = f"d{di}_{meal}_keep"
+            if slot in out:
+                continue
+            t_row = cell.row
+            _, t_end = _merged_span(ws, t_row, cell.column)
+            p_row, menu_end = t_row + 1, cell.column
+            for r in range(t_row + 1, t_row + 4):
+                mv = ws.cell(r, cell.column).value
+                if isinstance(mv, str) and "MID(" in mv:
+                    p_row = r
+                    _, menu_end = _merged_span(ws, r, cell.column)
+                    break
+            c1 = menu_end + 1
+            c2 = max(c1, t_end)
+            out[slot] = {"title": t_row, "row": p_row, "c1": c1, "c2": c2}
+    return out
+
+
+def tray_layout(ws) -> dict:
+    """주간식단표(사진): 칸 이름 -> {row, c1, c2}. '사진첨부' 머리글 열(앞=점심, 뒤=저녁)과 월~일 행을 찾는다."""
+    photo_cols, head_row = [], None
+    for row in ws.iter_rows(max_row=10):
+        cols = [c.column for c in row if isinstance(c.value, str) and "사진" in c.value and "첨부" in c.value]
+        if len(cols) >= 2:
+            photo_cols, head_row = cols[:2], row[0].row
+            break
+    if not photo_cols:
+        photo_cols, head_row = [3, 5], 2
+    day_rows = {}
+    for r in range(head_row + 1, head_row + 20):
+        for c in range(1, 3):
+            v = ws.cell(r, c).value
+            if isinstance(v, str) and v.strip()[:1] in DAY_NAMES and len(v.strip()) <= 3:
+                day_rows.setdefault(DAY_NAMES.index(v.strip()[:1]), r)
+    if len(day_rows) < 7:
+        day_rows = {i: 3 + i for i in range(7)}
+    out = {}
+    for di, r in day_rows.items():
+        for meal, col in (("lunch", photo_cols[0]), ("dinner", photo_cols[1])):
+            out[f"d{di}_{meal}_tray"] = {"row": r, "c1": col, "c2": col}
+    return out
+
+
+def _clear_photo_cells(ws, layout: dict):
+    """사진 칸에 남아 있는 글자(예: 예전 파일의 '#VALUE!', '사진없음')를 지운다. 수식은 그대로 둔다."""
+    for box in layout.values():
+        for c in range(box["c1"], box["c2"] + 1):
+            cell = ws.cell(box["row"], c)
+            v = cell.value
+            if v is not None and not (isinstance(v, str) and v.startswith("=")):
+                try:
+                    cell.value = None
+                except AttributeError:   # 병합된 칸의 안쪽
+                    pass
 
 
 def _date_from_filename(name: str) -> date | None:
@@ -480,12 +571,10 @@ def make_template(data: bytes) -> bytes:
             ms.cell(r, c).value = None
     pw = wb["주간식단표(사진)"]
     pw._images = []
-    for r in range(3, 10):
-        for c in (3, 5):
-            v = pw.cell(r, c).value
-            if not (isinstance(v, str) and v.startswith("=")):
-                pw.cell(r, c).value = None
-    wb["보존식 기록지(사진)"]._images = []
+    _clear_photo_cells(pw, tray_layout(pw))
+    pk = wb["보존식 기록지(사진)"]
+    pk._images = []
+    _clear_photo_cells(pk, keep_layout(pk))
     wb.calculation.fullCalcOnLoad = True
     buf = io.BytesIO()
     wb.save(buf)

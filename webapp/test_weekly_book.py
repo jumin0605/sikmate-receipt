@@ -104,5 +104,27 @@ class MacroTest(unittest.TestCase):
         self.assertFalse(wb.has_vba(out))
 
 
+class LayoutTest(unittest.TestCase):
+    def test_photo_boxes_follow_sheet(self):
+        book = openpyxl.load_workbook(wb.TEMPLATE)
+        kl = wb.keep_layout(book["보존식 기록지(사진)"])
+        self.assertEqual(len(kl), 14)
+        self.assertEqual(kl["d1_dinner_keep"]["row"], 33)     # 화요일 석식: 10행 간격이 아님
+        self.assertEqual((kl["d1_dinner_keep"]["c1"], kl["d1_dinner_keep"]["c2"]), (3, 3))
+        tl = wb.tray_layout(book["주간식단표(사진)"])
+        self.assertEqual(tl["d6_dinner_tray"], {"row": 9, "c1": 5, "c2": 5})
+
+    def test_photos_land_in_their_block(self):
+        photos = {f"d{d}_{m}_keep": _jpg() for d in range(7) for m in ("lunch", "dinner")}
+        _, data, info = wb.build_weekly(date(2026, 11, 23), _days(), {}, {}, photos)
+        self.assertEqual(info["photos"], 14)
+        back = wb.read_weekly(data)
+        self.assertEqual(sorted(back["photos"]), sorted(photos))
+        book = openpyxl.load_workbook(io.BytesIO(data))
+        kl = wb.keep_layout(book["보존식 기록지(사진)"])
+        rows = sorted(i.anchor._from.row + 1 for i in book["보존식 기록지(사진)"]._images)
+        self.assertEqual(rows, sorted(b["row"] for b in kl.values()))
+
+
 if __name__ == "__main__":
     unittest.main()
