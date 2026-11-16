@@ -86,6 +86,30 @@ table{border-collapse:collapse;background:#fff}
 .wkimp .opt input{margin-top:3px}
 .wkimp .opt .small{display:block}
 .wkimp .tpl{font-size:12px;color:#475569;margin-top:8px}
+
+/* 사진 편집 창 (식단 사진 탭과 같은 기능) */
+#pe_modal{position:fixed;inset:0;background:rgba(15,23,42,.6);display:none;z-index:50;align-items:stretch;justify-content:center;font-size:13px}
+#pe_modal.on{display:flex}
+.pe-box{background:#fff;margin:12px;border-radius:10px;display:flex;flex-direction:column;flex:1;max-width:1200px;min-height:0}
+.pe-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #e2e8f0}
+.pe-head b{font-size:15px}
+.pe-head .sp{flex:1}
+.pe-body{flex:1;display:flex;min-height:0}
+.pe-stage{flex:1;position:relative;background:#334155;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.pe-stage canvas{display:block;max-width:100%;max-height:100%}
+#pe_ov{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
+.pe-side{width:280px;padding:12px;border-left:1px solid #e2e8f0;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.pe-side h4{font-size:13px;margin:0 0 6px;color:#1f4e78}
+.pe-side .grp{border:1px solid #e2e8f0;border-radius:7px;padding:9px}
+.pe-side .btns{display:flex;flex-wrap:wrap;gap:6px}
+.pe-side input[type=range]{width:100%}
+.pe-side .note{font-size:11.5px;color:#64748b;margin-top:5px;line-height:1.45}
+.pe-ib{border:1px solid #cbd5e1;background:#fff;border-radius:5px;padding:4px 8px;cursor:pointer;font-size:12.5px;color:#334155;white-space:nowrap;font-family:inherit}
+.pe-ib:hover{background:#f1f5f9}
+.pe-ib:disabled{opacity:.35;cursor:default}
+.pe-tiltv{font-weight:700;color:#1f4e78}
+.wkslot .ed{position:absolute;left:2px;top:2px;background:#1f4e78;color:#fff;border:0;border-radius:3px;font-size:11px;cursor:pointer;padding:1px 6px}
+.wkslot .edd{position:absolute;right:2px;bottom:16px;background:#fde68a;color:#78350f;font-size:10px;border-radius:3px;padding:0 4px}
 .wkset{display:flex;flex-wrap:wrap;gap:10px;background:#fff;padding:10px 12px;border:1px solid #d5dbe3;border-radius:6px}
 .wkset label{display:flex;flex-direction:column;font-size:11px;color:#555;gap:3px}
 .wkset input{padding:5px 6px;border:1px solid #b9c2cf;border-radius:4px;font-size:13px;width:120px;font-family:inherit}
@@ -162,7 +186,7 @@ table{border-collapse:collapse;background:#fff}
  <table id="wk_menu"></table>
  <h3>2. 검식일지 메뉴DB <span class="small" id="wk_dbinfo"></span></h3>
  <div id="wk_db"></div>
- <h3>3. 사진 <span class="small">— <b>식단 사진 탭에서 정리한 사진이 자동으로 들어옵니다.</b> 같은 날 (1) 중식 보존식, (2) 중식 식판, (3) 석식 보존식, (4) 석식 식판 칸입니다. 다른 사진은 끌어다 놓거나 칸을 눌러 넣고, 칸끼리 끌어서 자리를 바꿀 수 있습니다.</span></h3>
+ <h3>3. 사진 <span class="small">— <b>식단 사진 탭에서 정리한 사진이 자동으로 들어옵니다.</b> 같은 날 (1) 중식 보존식, (2) 중식 식판, (3) 석식 보존식, (4) 석식 식판 칸입니다. 다른 사진은 끌어다 놓거나 칸을 눌러 넣고, 칸끼리 끌어서 자리를 바꿀 수 있습니다. <b>사진을 누르면 원근·기울기·회전 편집 창이 열립니다.</b></span></h3>
  <div class="wkdrop" id="wk_drop">사진·폴더를 여기에 끌어다 놓거나 눌러서 고르세요 <button class="b sub" id="wk_pickdir" style="margin-left:8px">폴더 선택</button> <button class="b sub" id="wk_reload" title="식단 사진 탭에서 정리한 이 주 사진을 다시 채웁니다">식단 사진 탭에서 다시 가져오기</button> <button class="b sub" id="wk_clearph">사진 모두 빼기</button></div>
  <div class="hint" id="wk_shinfo"></div>
  <input type="file" id="wk_files" accept="image/*" multiple hidden><input type="file" id="wk_dir" webkitdirectory directory multiple hidden><input type="file" id="wk_one" accept="image/*" hidden>
@@ -170,6 +194,66 @@ table{border-collapse:collapse;background:#fff}
  <h3>4. 설정 <span class="small">(바꾸면 서버에 저장되어 다음 주에도 그대로 씁니다)</span></h3>
  <div class="wkset" id="wk_set"></div>
 </section>
+
+<div id="pe_modal">
+  <div class="pe-box">
+    <div class="pe-head">
+      <b id="pe_name">사진 편집</b>
+      <span class="sp"></span>
+      <button class="b sub" id="pe_prev">◀ 이전 칸</button>
+      <button class="b sub" id="pe_next">다음 칸 ▶</button>
+      <button class="b" id="pe_close">완료</button>
+    </div>
+    <div class="pe-body">
+      <div class="pe-stage" id="pe_stage"><canvas id="pe_cv"></canvas><canvas id="pe_ov"></canvas></div>
+      <div class="pe-side">
+        <div class="grp">
+          <h4>회전</h4>
+          <div class="btns">
+            <button class="pe-ib" id="pe_rL">↺ 왼쪽 90°</button>
+            <button class="pe-ib" id="pe_rR">↻ 오른쪽 90°</button>
+            <button class="pe-ib" id="pe_r180">180°</button>
+          </div>
+        </div>
+        <div class="grp">
+          <h4>기울기 조절 <span class="pe-tiltv" id="pe_tiltV">0.0°</span></h4>
+          <input type="range" id="pe_tilt" min="-20" max="20" step="0.1" value="0">
+          <div class="btns" style="margin-top:6px">
+            <button class="pe-ib" data-pt="-1">-1°</button><button class="pe-ib" data-pt="-0.2">-0.2°</button>
+            <button class="pe-ib" data-pt="0.2">+0.2°</button><button class="pe-ib" data-pt="1">+1°</button>
+            <button class="pe-ib" id="pe_tilt0">0°</button>
+          </div>
+          <label class="note" style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="pe_grid" checked> 수평 맞춤 격자 보기</label>
+          <div class="note">기울이면 빈 모서리가 생기지 않게 자동으로 조금 잘라냅니다.</div>
+        </div>
+        <div class="grp">
+          <h4>원근 맞추기</h4>
+          <div class="btns">
+            <button class="pe-ib" id="pe_pOn">모서리 잡기</button>
+            <button class="pe-ib" id="pe_pApply">적용</button>
+            <button class="pe-ib" id="pe_pOff">원근 해제</button>
+          </div>
+          <div class="note" id="pe_pNote">‘모서리 잡기’를 누르고 네 개의 점을 식판(또는 쟁반) 네 모서리에 끌어다 놓은 뒤 ‘적용’을 누르세요. 비스듬히 찍힌 사진이 반듯한 사각형으로 펴집니다.</div>
+        </div>
+        <div class="grp">
+          <h4>되돌리기</h4>
+          <div class="btns">
+            <button class="pe-ib" id="pe_undo">↶ 되돌림</button>
+            <button class="pe-ib" id="pe_reset">원본으로</button>
+          </div>
+        </div>
+        <div class="grp">
+          <h4>이 칸 사진</h4>
+          <div class="btns">
+            <button class="pe-ib" id="pe_replace">다른 사진으로 바꾸기</button>
+            <button class="pe-ib" id="pe_remove" style="color:#b91c1c">칸에서 빼기</button>
+          </div>
+          <div class="note" id="pe_info"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 <datalist id="dl-밥"></datalist><datalist id="dl-국"></datalist><datalist id="dl-주메뉴"></datalist><datalist id="dl-부찬"></datalist><datalist id="dl-김치"></datalist><datalist id="dl-간식"></datalist><datalist id="dl-ing"></datalist>
 
 <script>
@@ -529,7 +613,7 @@ function wkSharedInfo(){const el=$('#wk_shinfo');if(!el)return;const n=Object.va
 MPS.listen(()=>{if(WK.loaded)wkLoadShared();});
 function wkRenderPhotos(){
   const st=pd($('#wk_ws').value);let h='<tr><th style="width:70px"></th>'+WK_SLOTS.map(s=>`<th>${s[2]}</th>`).join('')+'</tr>';
-  for(let di=0;di<7;di++){h+=`<tr><th>${WD[di]} ${md(addDays(st,di))}</th>`+WK_SLOTS.map(([m,k])=>{const id=`d${di}_${m}_${k}`,p=WK.photos[id];return `<td><div class="wkslot" data-slot="${id}" draggable="${p?'true':'false'}">${p?`<img src="${p.url}" alt=""><button class="x" data-rm="${id}" title="빼기">✕</button><span class="nm">${p.src==='shared'?'자동 · ':''}${esc(p.name)}</span>`:'사진 없음<br>(눌러서 넣기)'}</div></td>`}).join('')+'</tr>';}
+  for(let di=0;di<7;di++){h+=`<tr><th>${WD[di]} ${md(addDays(st,di))}</th>`+WK_SLOTS.map(([m,k])=>{const id=`d${di}_${m}_${k}`,p=WK.photos[id];return `<td><div class="wkslot" data-slot="${id}" draggable="${p?'true':'false'}">${p?`<img src="${p.url}" alt=""><button class="ed" data-ed="${id}" title="원근·기울기·회전 편집">편집</button><button class="x" data-rm="${id}" title="빼기">✕</button>${peEdited(p)?'<span class="edd">편집됨</span>':''}<span class="nm">${p.src==='shared'?'자동 · ':''}${esc(p.name)}</span>`:'사진 없음<br>(눌러서 넣기)'}</div></td>`}).join('')+'</tr>';}
   $('#wk_ph').innerHTML=h;
   $('#wk_clearph').disabled=!Object.keys(WK.photos).length;
   wkSharedInfo();
@@ -556,8 +640,9 @@ async function wkDrop(dt,slot){
 }
 let wkOneSlot='';
 $('#wk_ph').addEventListener('click',e=>{const rm=e.target.closest('[data-rm]');if(rm){e.stopPropagation();const p=WK.photos[rm.dataset.rm];if(p){if(p.src==='shared')WK.removed[rm.dataset.rm]=p.sig;URL.revokeObjectURL(p.url);}delete WK.photos[rm.dataset.rm];wkRenderPhotos();return;}
-  const s=e.target.closest('[data-slot]');if(s){wkOneSlot=s.dataset.slot;$('#wk_one').click();}});
-$('#wk_one').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(f&&wkOneSlot){wkSetPhoto(wkOneSlot,await wkShrink(f),f.name);wkRenderPhotos();}};
+  const ed=e.target.closest('[data-ed]');if(ed){e.stopPropagation();peOpen(ed.dataset.ed);return;}
+  const s=e.target.closest('[data-slot]');if(s){if(WK.photos[s.dataset.slot]){peOpen(s.dataset.slot);return;}wkOneSlot=s.dataset.slot;$('#wk_one').click();}});
+$('#wk_one').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(f&&wkOneSlot){wkSetPhoto(wkOneSlot,await wkShrink(f),f.name);wkRenderPhotos();if(PE.slot===wkOneSlot)peOpen(wkOneSlot);}};
 $('#wk_ph').addEventListener('dragstart',e=>{const s=e.target.closest('[data-slot]');if(s&&WK.photos[s.dataset.slot])e.dataTransfer.setData('text/wk-slot',s.dataset.slot);});
 $('#wk_ph').addEventListener('dragover',e=>{const s=e.target.closest('[data-slot]');if(s){e.preventDefault();s.classList.add('over');}});
 $('#wk_ph').addEventListener('dragleave',e=>{const s=e.target.closest('[data-slot]');if(s)s.classList.remove('over');});
@@ -671,6 +756,142 @@ $('#wk_impfile').onchange=e=>{const f=e.target.files[0];e.target.value='';wkImpo
 ['dragenter','dragover'].forEach(t=>wki.addEventListener(t,e=>{e.preventDefault();e.stopPropagation();wki.classList.add('over');}));
 ['dragleave'].forEach(t=>wki.addEventListener(t,e=>{wki.classList.remove('over');}));
 wki.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();wki.classList.remove('over');const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)wkImport(f);});
+
+// ---------- 사진 편집 창 (식단 사진 탭과 같은 원근·기울기·회전·되돌림)
+const PE={slot:null,base:null,pMode:false,pts:null,drag:-1};
+const peEl=id=>document.getElementById(id);
+const peBlank=()=>({rot:0,tilt:0,quad:null});
+function peEdited(p){const e=p&&p.ed;return !!(e&&((e.rot%360)||e.tilt||e.quad));}
+function peRotTilt(src,ed){
+  const r=((ed.rot%360)+360)%360,w=src.width,h=src.height;
+  const W=(r===90||r===270)?h:w,H=(r===90||r===270)?w:h;
+  const t=(ed.tilt||0)*Math.PI/180,c=Math.abs(Math.cos(t)),s=Math.abs(Math.sin(t));
+  const k=Math.min(W/(W*c+H*s),H/(W*s+H*c));
+  const ow=Math.max(1,Math.round(W*k)),oh=Math.max(1,Math.round(H*k));
+  const cv=document.createElement('canvas');cv.width=ow;cv.height=oh;
+  const g=cv.getContext('2d');g.imageSmoothingQuality='high';g.translate(ow/2,oh/2);g.rotate(t+r*Math.PI/180);g.drawImage(src,-w/2,-h/2);
+  return cv;
+}
+function peSolveH(src,dst){
+  const A=[],b=[];
+  for(let i=0;i<4;i++){const x=dst[i][0],y=dst[i][1],u=src[i][0],v=src[i][1];A.push([x,y,1,0,0,0,-u*x,-u*y]);b.push(u);A.push([0,0,0,x,y,1,-v*x,-v*y]);b.push(v);}
+  for(let c=0;c<8;c++){let p=c;for(let r=c+1;r<8;r++)if(Math.abs(A[r][c])>Math.abs(A[p][c]))p=r;
+    [A[c],A[p]]=[A[p],A[c]];[b[c],b[p]]=[b[p],b[c]];
+    for(let r=c+1;r<8;r++){const f=A[r][c]/A[c][c];for(let k=c;k<8;k++)A[r][k]-=f*A[c][k];b[r]-=f*b[c];}}
+  const hh=new Array(8);for(let i=7;i>=0;i--){let sum=b[i];for(let k=i+1;k<8;k++)sum-=A[i][k]*hh[k];hh[i]=sum/A[i][i];}
+  return hh;
+}
+function peWarp(cv,quad,maxSide){
+  const W=cv.width,H=cv.height,P=quad.map(q=>[q[0]*W,q[1]*H]),dd=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
+  let ow=(dd(P[0],P[1])+dd(P[3],P[2]))/2,oh=(dd(P[0],P[3])+dd(P[1],P[2]))/2;
+  const sc=Math.min(1,(maxSide||2400)/Math.max(ow,oh));ow=Math.max(2,Math.round(ow*sc));oh=Math.max(2,Math.round(oh*sc));
+  const h=peSolveH(P,[[0,0],[ow,0],[ow,oh],[0,oh]]),sd=cv.getContext('2d').getImageData(0,0,W,H).data;
+  const out=document.createElement('canvas');out.width=ow;out.height=oh;const og=out.getContext('2d'),id=og.createImageData(ow,oh),od=id.data;
+  for(let y=0;y<oh;y++){const yy=y+.5;for(let x=0;x<ow;x++){const xx=x+.5,d=h[6]*xx+h[7]*yy+1;
+    let u=(h[0]*xx+h[1]*yy+h[2])/d-.5,v=(h[3]*xx+h[4]*yy+h[5])/d-.5;if(u<0)u=0;if(v<0)v=0;if(u>W-1)u=W-1;if(v>H-1)v=H-1;
+    const x0=u|0,y0=v|0,x1=Math.min(x0+1,W-1),y1=Math.min(y0+1,H-1),fx=u-x0,fy=v-y0,i00=(y0*W+x0)*4,i10=(y0*W+x1)*4,i01=(y1*W+x0)*4,i11=(y1*W+x1)*4,o=(y*ow+x)*4;
+    for(let ch=0;ch<3;ch++){const tp=sd[i00+ch]+(sd[i10+ch]-sd[i00+ch])*fx,bt=sd[i01+ch]+(sd[i11+ch]-sd[i01+ch])*fx;od[o+ch]=tp+(bt-tp)*fy;}od[o+3]=255;}}
+  og.putImageData(id,0,0);return out;
+}
+function peQuadOk(q){let s=0;for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],c=q[(i+2)%4],z=(b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0]);if(Math.abs(z)<1e-6)return false;if(!s)s=Math.sign(z);else if(Math.sign(z)!==s)return false;}return true;}
+async function peSrc(p){ // 편집의 기준이 되는 원본(처음 칸에 들어온 사진)
+  if(p.srcCv)return p.srcCv;
+  if(!p.orig)p.orig=p.blob;
+  let bmp;try{bmp=await createImageBitmap(p.orig);}catch(e){bmp=await new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=no;i.src=URL.createObjectURL(p.orig);});}
+  const s=Math.min(1,2400/Math.max(bmp.width,bmp.height)),c=document.createElement('canvas');c.width=Math.round(bmp.width*s);c.height=Math.round(bmp.height*s);
+  c.getContext('2d').drawImage(bmp,0,0,c.width,c.height);if(bmp.close)bmp.close();p.srcCv=c;return c;
+}
+function peSlots(){const out=[];for(let di=0;di<7;di++)for(const [m,k] of WK_SLOTS){const id=`d${di}_${m}_${k}`;if(WK.photos[id])out.push(id);}return out;}
+function peSlotLabel(slot){const m=slot.match(/^d(\d)_(lunch|dinner)_(tray|keep)$/);if(!m)return slot;const st=pd($('#wk_ws').value);return `${WD[+m[1]]} ${md(addDays(st,+m[1]))} ${m[2]==='lunch'?'중식':'석식'} ${m[3]==='keep'?'보존식':'식판'}`;}
+async function peOpen(slot){
+  const p=WK.photos[slot];if(!p)return;
+  if(PE.pMode)peApplyQuad();
+  PE.slot=slot;PE.pMode=false;PE.pts=null;
+  if(!p.ed)p.ed=peBlank();if(!p.hist)p.hist=[];
+  peEl('pe_modal').classList.add('on');
+  peEl('pe_tilt').value=p.ed.tilt||0;peEl('pe_tiltV').textContent=(+p.ed.tilt||0).toFixed(1)+'°';
+  await peSrc(p);peDraw();
+}
+function peClose(){if(PE.pMode)peApplyQuad();PE.slot=null;PE.pMode=false;peEl('pe_modal').classList.remove('on');wkRenderPhotos();}
+function peFit(cv){const st=peEl('pe_stage'),sw=st.clientWidth-20,sh=st.clientHeight-20,s=Math.min(1,sw/cv.width,sh/cv.height);return{w:Math.max(1,Math.round(cv.width*s)),h:Math.max(1,Math.round(cv.height*s))};}
+function peDraw(){
+  const p=WK.photos[PE.slot];if(!p||!p.srcCv)return;
+  PE.base=peRotTilt(p.srcCv,p.ed);
+  const show=(!PE.pMode&&p.ed.quad)?peWarp(PE.base,p.ed.quad,1600):PE.base,sz=peFit(show),cv=peEl('pe_cv');
+  cv.width=sz.w;cv.height=sz.h;const g=cv.getContext('2d');g.imageSmoothingQuality='high';g.drawImage(show,0,0,sz.w,sz.h);
+  if(PE.pMode&&!PE.pts)PE.pts=(p.ed.quad||[[.05,.05],[.95,.05],[.95,.95],[.05,.95]]).map(q=>q.slice());
+  const list=peSlots(),i=list.indexOf(PE.slot);
+  peEl('pe_name').textContent=`사진 편집 · ${peSlotLabel(PE.slot)} (${i+1} / ${list.length})`;
+  peEl('pe_info').textContent=`사진: ${p.name}`+(p.src==='shared'?' · 식단 사진 탭에서 자동으로 들어온 사진입니다. 여기서 편집하면 이 칸은 직접 정한 사진으로 바뀌어, 식단 사진 탭이 바뀌어도 덮어쓰지 않습니다.':'');
+  peEl('pe_pApply').disabled=!PE.pMode;peEl('pe_pOff').disabled=!p.ed.quad&&!PE.pMode;peEl('pe_pOn').disabled=PE.pMode;
+  peEl('pe_undo').disabled=!p.hist.length;peEl('pe_reset').disabled=!peEdited(p)&&!p.hist.length;
+  peEl('pe_prev').disabled=i<=0;peEl('pe_next').disabled=i>=list.length-1;
+  peEl('pe_pNote').style.color=PE.pMode?'#b45309':'';
+  peOverlay();
+}
+function peBox(){const r=peEl('pe_cv').getBoundingClientRect(),s=peEl('pe_ov').getBoundingClientRect();return{x:r.left-s.left,y:r.top-s.top,w:r.width,h:r.height};}
+function peOverlay(){
+  const ov=peEl('pe_ov'),s=ov.getBoundingClientRect();ov.width=Math.round(s.width);ov.height=Math.round(s.height);
+  const g=ov.getContext('2d');g.clearRect(0,0,ov.width,ov.height);if(!PE.slot)return;const b=peBox();
+  if(peEl('pe_grid').checked&&!PE.pMode){g.strokeStyle='rgba(255,255,255,.45)';g.lineWidth=1;
+    for(let i=1;i<6;i++){const x=b.x+b.w*i/6+.5,y=b.y+b.h*i/6+.5;g.beginPath();g.moveTo(x,b.y);g.lineTo(x,b.y+b.h);g.stroke();g.beginPath();g.moveTo(b.x,y);g.lineTo(b.x+b.w,y);g.stroke();}}
+  if(PE.pMode&&PE.pts){const P=PE.pts.map(q=>[b.x+q[0]*b.w,b.y+q[1]*b.h]);
+    g.fillStyle='rgba(15,23,42,.6)';g.beginPath();g.rect(0,0,ov.width,ov.height);g.moveTo(P[0][0],P[0][1]);for(let j=3;j>=0;j--)g.lineTo(P[j][0],P[j][1]);g.closePath();g.fill('evenodd');
+    g.strokeStyle='#fde68a';g.lineWidth=2;g.beginPath();g.moveTo(P[0][0],P[0][1]);for(let k=1;k<4;k++)g.lineTo(P[k][0],P[k][1]);g.closePath();g.stroke();
+    P.forEach((q,i)=>{g.beginPath();g.arc(q[0],q[1],10,0,Math.PI*2);g.fillStyle=PE.drag===i?'#f59e0b':'#fde68a';g.fill();g.lineWidth=2;g.strokeStyle='#78350f';g.stroke();});}
+}
+const peOv=peEl('pe_ov');
+const pePos=e=>{const s=peOv.getBoundingClientRect();return[e.clientX-s.left,e.clientY-s.top];};
+peOv.addEventListener('pointerdown',e=>{if(!PE.pMode||!PE.pts)return;const b=peBox(),q=pePos(e);let best=-1,bd=30;
+  PE.pts.forEach((t,i)=>{const d=Math.hypot(b.x+t[0]*b.w-q[0],b.y+t[1]*b.h-q[1]);if(d<bd){bd=d;best=i;}});
+  if(best>=0){PE.drag=best;peOv.setPointerCapture(e.pointerId);peOverlay();e.preventDefault();}});
+peOv.addEventListener('pointermove',e=>{if(PE.drag<0)return;const b=peBox(),q=pePos(e);PE.pts[PE.drag]=[Math.min(1,Math.max(0,(q[0]-b.x)/b.w)),Math.min(1,Math.max(0,(q[1]-b.y)/b.h))];peOverlay();});
+peOv.addEventListener('pointerup',()=>{PE.drag=-1;peOverlay();});
+// 편집 결과를 칸 사진으로 다시 만든다 (원본은 그대로 두고, 되돌림·원본으로 가능)
+async function peCommit(p){
+  let cv=peRotTilt(p.srcCv,p.ed);if(p.ed.quad)cv=peWarp(cv,p.ed.quad,2400);
+  const s=Math.min(1,1400/Math.max(cv.width,cv.height));let out=cv;
+  if(s<1){out=document.createElement('canvas');out.width=Math.round(cv.width*s);out.height=Math.round(cv.height*s);const g=out.getContext('2d');g.imageSmoothingQuality='high';g.drawImage(cv,0,0,out.width,out.height);}
+  const blob=peEdited(p)?await new Promise(ok=>out.toBlob(ok,'image/jpeg',.9)):p.orig;
+  if(p.url)URL.revokeObjectURL(p.url);p.blob=blob;p.url=URL.createObjectURL(blob);
+  if(p.src==='shared')p.src='manual';
+  wkRenderPhotos();
+}
+function pePush(p){p.hist.push(JSON.stringify(p.ed));if(p.hist.length>60)p.hist.shift();}
+async function peEdit(fn){const p=WK.photos[PE.slot];if(!p)return;pePush(p);fn(p.ed);PE.pMode=false;PE.pts=null;peDraw();await peCommit(p);peDraw();}
+function peApplyQuad(){
+  const p=WK.photos[PE.slot];if(!PE.pMode||!PE.pts||!p)return;
+  if(!peQuadOk(PE.pts)){wkMsg('네 점이 꼬였습니다. 왼위 → 오위 → 오아래 → 왼아래 순서가 되게 놓아 주세요.',true);return;}
+  const q=PE.pts.map(t=>t.slice());peEdit(ed=>{ed.quad=q;});
+}
+peEl('pe_pOn').onclick=()=>{PE.pMode=true;PE.pts=null;peDraw();};
+peEl('pe_pApply').onclick=peApplyQuad;
+peEl('pe_pOff').onclick=()=>{const p=WK.photos[PE.slot];if(PE.pMode&&!(p&&p.ed.quad)){PE.pMode=false;PE.pts=null;peDraw();return;}PE.pMode=false;PE.pts=null;if(p&&p.ed.quad)peEdit(ed=>{ed.quad=null;});else peDraw();};
+peEl('pe_rL').onclick=()=>peEdit(ed=>{ed.rot=(((ed.rot-90)%360)+360)%360;ed.quad=null;});
+peEl('pe_rR').onclick=()=>peEdit(ed=>{ed.rot=(ed.rot+90)%360;ed.quad=null;});
+peEl('pe_r180').onclick=()=>peEdit(ed=>{ed.rot=(ed.rot+180)%360;ed.quad=null;});
+function peTilt(v,commit){
+  const p=WK.photos[PE.slot];if(!p)return;v=Math.max(-20,Math.min(20,Math.round(v*10)/10));
+  peEl('pe_tilt').value=v;peEl('pe_tiltV').textContent=v.toFixed(1)+'°';
+  if(!commit){const cv=peRotTilt(p.srcCv,{rot:p.ed.rot,tilt:v,quad:null}),sz=peFit(cv),c=peEl('pe_cv');c.width=sz.w;c.height=sz.h;c.getContext('2d').drawImage(cv,0,0,sz.w,sz.h);peOverlay();return;}
+  if(v===(p.ed.tilt||0)){peDraw();return;}
+  const had=!!p.ed.quad;peEdit(ed=>{ed.tilt=v;ed.quad=null;});
+  if(had)wkMsg('기울기를 바꿔서 원근 맞추기는 풀었습니다. 필요하면 다시 잡아 주세요.');
+}
+peEl('pe_tilt').oninput=function(){peTilt(+this.value,false);};
+peEl('pe_tilt').onchange=function(){peTilt(+this.value,true);};
+document.querySelectorAll('[data-pt]').forEach(b=>b.onclick=()=>{const p=WK.photos[PE.slot];if(p)peTilt((+p.ed.tilt||0)+(+b.dataset.pt),true);});
+peEl('pe_tilt0').onclick=()=>peTilt(0,true);
+peEl('pe_grid').onchange=peOverlay;
+peEl('pe_undo').onclick=async()=>{const p=WK.photos[PE.slot];if(!p||!p.hist.length)return;p.ed=JSON.parse(p.hist.pop());PE.pMode=false;PE.pts=null;peEl('pe_tilt').value=p.ed.tilt||0;peEl('pe_tiltV').textContent=(+p.ed.tilt||0).toFixed(1)+'°';peDraw();await peCommit(p);peDraw();};
+peEl('pe_reset').onclick=async()=>{await peEdit(ed=>{ed.rot=0;ed.tilt=0;ed.quad=null;});peEl('pe_tilt').value=0;peEl('pe_tiltV').textContent='0.0°';};
+peEl('pe_replace').onclick=()=>{wkOneSlot=PE.slot;$('#wk_one').click();};
+peEl('pe_remove').onclick=()=>{const sl=PE.slot,p=WK.photos[sl];if(!p)return;if(p.src==='shared')WK.removed[sl]=p.sig;URL.revokeObjectURL(p.url);delete WK.photos[sl];const list=peSlots();PE.slot=null;if(list.length){peOpen(list[0]);}else peClose();wkRenderPhotos();};
+peEl('pe_close').onclick=peClose;
+peEl('pe_prev').onclick=()=>{const l=peSlots(),i=l.indexOf(PE.slot);if(i>0)peOpen(l[i-1]);};
+peEl('pe_next').onclick=()=>{const l=peSlots(),i=l.indexOf(PE.slot);if(i>=0&&i<l.length-1)peOpen(l[i+1]);};
+window.addEventListener('resize',()=>{if(PE.slot)peDraw();});
+document.addEventListener('keydown',e=>{if(!PE.slot)return;if(e.key==='Escape')peClose();else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();peEl('pe_undo').click();}});
 // ---------- init
 (function(){
   const today=new Date();
