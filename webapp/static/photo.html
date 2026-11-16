@@ -38,6 +38,8 @@ button{font-family:inherit}
 .cb{padding:8px;display:flex;flex-direction:column;gap:6px}
 .cb .nm{width:100%;font-weight:700}
 .cb .nm.manual{background:#fffbeb;border-color:#f59e0b}
+.cb .slotinfo{font-size:11.5px;color:#0f766e;font-weight:700}
+.cb .slotinfo.off{color:#94a3b8;font-weight:400}
 .cb .orig{font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cb .line{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
 .cb .line input[type=date]{flex:1;padding:4px 5px;font-size:12px}
@@ -80,7 +82,7 @@ button{font-family:inherit}
 </style></head><body>
 <div class="wrap">
   <h1>식단 사진 정리</h1>
-  <p class="sub">사진을 올리면 원근 맞추기, 기울기, 회전, 용량 줄이기를 하고 날짜 이름으로 저장합니다. 사진은 이 컴퓨터 브라우저 안에서만 처리되고 서버로 보내지 않습니다.</p>
+  <p class="sub">사진을 올리면 원근 맞추기, 기울기, 회전, 용량 줄이기를 하고 날짜 이름으로 저장합니다. 정리한 사진은 <b>신태양 식단표 · 발주서 → 주간 서류(엑셀)</b> 탭의 사진 칸에 자동으로 들어갑니다 (같은 날 (1) 중식 보존식, (2) 중식 식판, (3) 석식 보존식, (4) 석식 식판). 사진은 이 컴퓨터 브라우저 안에서만 처리되고 서버로 보내지 않습니다.</p>
 
   <div class="panel">
     <div id="drop" class="drop"><b>사진 올리기</b> · 여기를 눌러 고르거나 사진·폴더를 끌어다 놓으세요 (여러 장 · 폴더째 가능)</div>
@@ -505,6 +507,7 @@ async function encode(it){
   if (it.url) URL.revokeObjectURL(it.url);
   it.url = URL.createObjectURL(r.blob);
   it.dirty = false;
+  it.ver = (it.ver || 0) + 1;
 }
 var busy = false, again = false;
 async function processAll(){
@@ -521,14 +524,74 @@ async function processAll(){
         updateCard(todo[i]);
       }
     } while (again);
-    if (todo && todo.length) say('준비됐습니다. ' + items.length + '장' + ($('fit').checked ? ' · 목표 ' + (+$('kb').value) + 'KB 이하' : ''));
-  } finally { busy = false; }
+    if (todo && todo.length) say('준비됐습니다. ' + items.length + '장' + ($('fit').checked ? ' · 목표 ' + (+$('kb').value) + 'KB 이하' : '') + ' · 주간 서류(엑셀) 탭에 자동으로 들어갑니다.');
+  } finally { busy = false; scheduleShare(); }
 }
 async function ready(){
   while (busy || items.some(function(it){ return it.dirty; })) {
     if (!busy) processAll();
     await new Promise(function(r){ setTimeout(r, 120); });
   }
+}
+
+
+// ---------- 식단 사진 탭 ↔ 주간 서류(엑셀) 탭 공유 (이 컴퓨터 브라우저 안에만 저장)
+var MPS = (function(){
+  var DBN = 'sikmate-shared', ST = 'mealPhotos', CHN = 'sikmate-meal-photos', ch = null;
+  try { ch = new BroadcastChannel(CHN); } catch (e) {}
+  function open(){
+    return new Promise(function(ok, no){
+      if (!window.indexedDB) { no(new Error('no indexedDB')); return; }
+      var r = indexedDB.open(DBN, 1);
+      r.onupgradeneeded = function(){ var db = r.result; if (!db.objectStoreNames.contains(ST)) db.createObjectStore(ST, {keyPath:'key'}); };
+      r.onsuccess = function(){ ok(r.result); };
+      r.onerror = function(){ no(r.error); };
+    });
+  }
+  function run(mode, fn){
+    return open().then(function(db){
+      return new Promise(function(ok, no){
+        var t = db.transaction(ST, mode), req = fn(t.objectStore(ST));
+        t.oncomplete = function(){ db.close(); ok(req ? req.result : undefined); };
+        t.onerror = t.onabort = function(){ db.close(); no(t.error); };
+      });
+    });
+  }
+  return {
+    all: function(){ return run('readonly', function(s){ return s.getAll(); }).then(function(r){ return r || []; }); },
+    put: function(rec){ return run('readwrite', function(s){ return s.put(rec); }); },
+    del: function(key){ return run('readwrite', function(s){ return s.delete(key); }); },
+    notify: function(){ try { if (ch) ch.postMessage({type:'changed', at:Date.now()}); } catch (e) {} },
+    listen: function(fn){ if (ch) ch.onmessage = function(e){ if (e.data && e.data.type === 'changed') fn(); }; }
+  };
+})();
+
+var SHARE_SESSION = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+var SLOT_LABEL = ['', '중식 보존식', '중식 식판', '석식 보존식', '석식 식판'];
+var shareTimer = null;
+function scheduleShare(){ clearTimeout(shareTimer); shareTimer = setTimeout(shareNow, 400); }
+function sharedKeyOf(it){ return (!it.manualName && it.date && it.seq >= 1 && it.seq <= 4) ? it.date + '|' + it.seq : ''; }
+// 날짜 + 번호((1)~(4)) 로 주간 서류 칸을 정한다. 같은 날짜를 이 화면에서 새로 정리하면 예전 것은 지운다.
+async function shareNow(){
+  try {
+    var want = {}, dates = {};
+    items.forEach(function(it){ var k = sharedKeyOf(it); if (k && !it.dirty && it.blob) { want[k] = it; dates[it.date] = 1; } });
+    var all = await MPS.all(), byKey = {}, now = Date.now(), changed = false;
+    for (var i = 0; i < all.length; i++) {
+      var r = all[i]; byKey[r.key] = r;
+      var mine = r.owner === SHARE_SESSION;
+      var stale = (mine && (!want[r.key] || want[r.key].id !== r.itemId)) || (!mine && dates[r.date] && !want[r.key]) || (now - (r.t || 0) > 60 * 864e5);
+      if (stale) { await MPS.del(r.key); delete byKey[r.key]; changed = true; }
+    }
+    for (var key in want) {
+      var it = want[key], old = byKey[key];
+      if (!old || old.owner !== SHARE_SESSION || old.itemId !== it.id || old.ver !== it.ver || old.name !== outName(it)) {
+        await MPS.put({key:key, date:it.date, seq:it.seq, name:outName(it), blob:it.blob, owner:SHARE_SESSION, itemId:it.id, ver:it.ver, t:now});
+        changed = true;
+      }
+    }
+    if (changed) MPS.notify();
+  } catch (e) { /* 저장 공간을 못 쓰는 브라우저면 연결만 빠진다 */ }
 }
 
 // ---------- 목록 화면 ----------
@@ -544,6 +607,7 @@ function render(){
       '<div class="cb">' +
         '<input type="text" class="nm" title="파일 이름 (비우면 날짜 자동 이름)">' +
         '<div class="orig"></div>' +
+        '<div class="slotinfo"></div>' +
         '<div class="line"><input type="date" class="dt" title="이 사진의 날짜"></div>' +
         '<div class="line">' +
           '<button class="ib e" title="원근·기울기 편집">편집</button>' +
@@ -582,6 +646,7 @@ function render(){
     nm.onkeydown = function(e){ if (e.key === 'Enter') nm.blur(); };
     updateCard(it, d);
   });
+  scheduleShare();
 }
 function updateCard(it, d){
   d = d || document.querySelector('.card[data-id="' + it.id + '"]');
@@ -596,6 +661,8 @@ function updateCard(it, d){
   if (it.ed.tilt) tags.push('기울기 ' + it.ed.tilt.toFixed(1) + '°');
   if (it.ed.quad) tags.push('원근');
   var ed = d.querySelector('.ed'); ed.style.display = tags.length ? '' : 'none'; ed.textContent = tags.join(' · ');
+  var si = d.querySelector('.slotinfo');
+  if (si) { var sk = sharedKeyOf(it); si.textContent = sk ? '→ 주간 서류: ' + SLOT_LABEL[it.seq] : (it.manualName ? '직접 바꾼 이름이라 주간 서류에는 안 들어감' : (it.seq > 4 ? '(5번째 이후라 주간 서류에는 안 들어감)' : '')); si.className = 'slotinfo' + (sk ? '' : ' off'); }
   var nm = d.querySelector('.nm');
   if (document.activeElement !== nm) nm.value = it.manualName || it.autoName;
   nm.classList.toggle('manual', !!it.manualName);

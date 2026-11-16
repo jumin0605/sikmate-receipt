@@ -146,8 +146,9 @@ table{border-collapse:collapse;background:#fff}
  <table id="wk_menu"></table>
  <h3>2. 검식일지 메뉴DB <span class="small" id="wk_dbinfo"></span></h3>
  <div id="wk_db"></div>
- <h3>3. 사진 <span class="small">— 식단 사진 탭에서 정리한 사진(예: 26-11-16_월요일(1)~(4))이나 폴더를 통째로 끌어다 놓으세요. 같은 날 (1) 중식 보존식, (2) 중식 식판, (3) 석식 보존식, (4) 석식 식판 칸에 들어갑니다. 칸끼리 끌어서 자리를 바꿀 수 있습니다.</span></h3>
- <div class="wkdrop" id="wk_drop">사진·폴더를 여기에 끌어다 놓거나 눌러서 고르세요 <button class="b sub" id="wk_pickdir" style="margin-left:8px">폴더 선택</button> <button class="b sub" id="wk_clearph">사진 모두 빼기</button></div>
+ <h3>3. 사진 <span class="small">— <b>식단 사진 탭에서 정리한 사진이 자동으로 들어옵니다.</b> 같은 날 (1) 중식 보존식, (2) 중식 식판, (3) 석식 보존식, (4) 석식 식판 칸입니다. 다른 사진은 끌어다 놓거나 칸을 눌러 넣고, 칸끼리 끌어서 자리를 바꿀 수 있습니다.</span></h3>
+ <div class="wkdrop" id="wk_drop">사진·폴더를 여기에 끌어다 놓거나 눌러서 고르세요 <button class="b sub" id="wk_pickdir" style="margin-left:8px">폴더 선택</button> <button class="b sub" id="wk_reload" title="식단 사진 탭에서 정리한 이 주 사진을 다시 채웁니다">식단 사진 탭에서 다시 가져오기</button> <button class="b sub" id="wk_clearph">사진 모두 빼기</button></div>
+ <div class="hint" id="wk_shinfo"></div>
  <input type="file" id="wk_files" accept="image/*" multiple hidden><input type="file" id="wk_dir" webkitdirectory directory multiple hidden><input type="file" id="wk_one" accept="image/*" hidden>
  <table class="wkph" id="wk_ph"></table>
  <h3>4. 설정 <span class="small">(바꾸면 서버에 저장되어 다음 주에도 그대로 씁니다)</span></h3>
@@ -405,7 +406,38 @@ $('#exportbk').onclick=()=>{const b=new Blob([JSON.stringify({kind:'sty-menu-bac
 $('#importbk').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const j=JSON.parse(await f.text());if(j.kind!=='sty-menu-backup')throw 0;const ch=mergeInto(S,j.data);saveLocal();schedulePush();refreshAll();alert(ch?'백업에서 더 최신인 내용을 가져왔습니다.':'가져올 새 내용이 없습니다(이미 더 최신).');}catch(err){alert('백업 파일을 읽지 못했습니다.');}e.target.value='';};
 
 // ---------- 주간 서류(엑셀): 식단표·검식일지 .xlsm
-const WK={db:null,photos:{},loaded:false};
+
+// ---------- 식단 사진 탭 ↔ 주간 서류(엑셀) 탭 공유 (이 컴퓨터 브라우저 안에만 저장)
+var MPS = (function(){
+  var DBN = 'sikmate-shared', ST = 'mealPhotos', CHN = 'sikmate-meal-photos', ch = null;
+  try { ch = new BroadcastChannel(CHN); } catch (e) {}
+  function open(){
+    return new Promise(function(ok, no){
+      if (!window.indexedDB) { no(new Error('no indexedDB')); return; }
+      var r = indexedDB.open(DBN, 1);
+      r.onupgradeneeded = function(){ var db = r.result; if (!db.objectStoreNames.contains(ST)) db.createObjectStore(ST, {keyPath:'key'}); };
+      r.onsuccess = function(){ ok(r.result); };
+      r.onerror = function(){ no(r.error); };
+    });
+  }
+  function run(mode, fn){
+    return open().then(function(db){
+      return new Promise(function(ok, no){
+        var t = db.transaction(ST, mode), req = fn(t.objectStore(ST));
+        t.oncomplete = function(){ db.close(); ok(req ? req.result : undefined); };
+        t.onerror = t.onabort = function(){ db.close(); no(t.error); };
+      });
+    });
+  }
+  return {
+    all: function(){ return run('readonly', function(s){ return s.getAll(); }).then(function(r){ return r || []; }); },
+    put: function(rec){ return run('readwrite', function(s){ return s.put(rec); }); },
+    del: function(key){ return run('readwrite', function(s){ return s.delete(key); }); },
+    notify: function(){ try { if (ch) ch.postMessage({type:'changed', at:Date.now()}); } catch (e) {} },
+    listen: function(fn){ if (ch) ch.onmessage = function(e){ if (e.data && e.data.type === 'changed') fn(); }; }
+  };
+})();
+const WK={db:null,photos:{},loaded:false,removed:{}};
 const WK_SLOTS=[['lunch','keep','중식 보존식'],['lunch','tray','중식 식판'],['dinner','keep','석식 보존식'],['dinner','tray','석식 식판']];
 const WK_SET=[['inspector','검식자','손성임'],['inspect_time','검식시간','10시45분'],['lunch_time','채취시간(중식)','11시00분'],['dinner_time','채취시간(석식)','16시00분'],['freezer','냉동고 온도','-18℃'],['keep_days','보존식 보관일수','6'],['keeper','담당자/채취자','영양사'],['sat_keeper','토요일 채취자','조리사'],['sun_keeper','일요일 채취자','요양사']];
 function wkMsg(t,err){const m=$('#wk_msg');m.textContent=t||'';m.style.color=err?'#c0392b':'#1f4e78';}
@@ -460,12 +492,31 @@ async function wkShrink(file){
   c.getContext('2d').drawImage(bmp,0,0,c.width,c.height);if(bmp.close)bmp.close();
   return await new Promise(ok=>c.toBlob(ok,'image/jpeg',0.85));
 }
-function wkSetPhoto(slot,blob,name){const old=WK.photos[slot];if(old)URL.revokeObjectURL(old.url);WK.photos[slot]={blob,name,url:URL.createObjectURL(blob)};}
+function wkSetPhoto(slot,blob,name,src,sig){const old=WK.photos[slot];if(old)URL.revokeObjectURL(old.url);WK.photos[slot]={blob,name,url:URL.createObjectURL(blob),src:src||'manual',sig:sig||''};}
+// 식단 사진 탭에서 정리한 사진을 날짜·번호로 칸에 자동으로 넣는다 (직접 넣은 사진은 그대로 둔다)
+async function wkLoadShared(){
+  const ws=$('#wk_ws').value;if(!ws)return 0;
+  let recs=[];try{recs=await MPS.all();}catch(e){return 0;}
+  const st=pd(ws),want={};
+  for(const r of recs){if(!r||!r.date||!r.blob)continue;const di=Math.round((pd(r.date)-st)/864e5);if(di<0||di>6||!(r.seq>=1&&r.seq<=4))continue;const [m,k]=WK_SLOTS[r.seq-1];want[`d${di}_${m}_${k}`]=r;}
+  let n=0,changed=false;
+  for(const sl in WK.photos){const p=WK.photos[sl];if(p.src!=='shared')continue;const r=want[sl];if(!r||(r.key+'|'+r.owner+'|'+r.ver)!==p.sig){URL.revokeObjectURL(p.url);delete WK.photos[sl];changed=true;}}
+  for(const sl in want){const r=want[sl],sig=r.key+'|'+r.owner+'|'+r.ver,p=WK.photos[sl];
+    if(p&&p.src!=='shared')continue;if(WK.removed[sl]===sig)continue;if(p&&p.sig===sig){n++;continue;}
+    wkSetPhoto(sl,r.blob,r.name,'shared',sig);n++;changed=true;}
+  if(changed)wkRenderPhotos();
+  WK.sharedCount=n;wkSharedInfo();
+  return n;
+}
+function wkSharedInfo(){const el=$('#wk_shinfo');if(!el)return;const n=Object.values(WK.photos).filter(p=>p.src==='shared').length,m=Object.values(WK.photos).filter(p=>p.src!=='shared').length;
+  el.textContent=n||m?`식단 사진 탭에서 자동으로 ${n}장`+(m?`, 직접 넣은 사진 ${m}장`:'')+' 들어가 있습니다.':'이 주 날짜의 사진이 아직 없습니다. 식단 사진 탭에서 사진을 올리고 정리하면 여기에 자동으로 들어옵니다.';}
+MPS.listen(()=>{if(WK.loaded)wkLoadShared();});
 function wkRenderPhotos(){
   const st=pd($('#wk_ws').value);let h='<tr><th style="width:70px"></th>'+WK_SLOTS.map(s=>`<th>${s[2]}</th>`).join('')+'</tr>';
-  for(let di=0;di<7;di++){h+=`<tr><th>${WD[di]} ${md(addDays(st,di))}</th>`+WK_SLOTS.map(([m,k])=>{const id=`d${di}_${m}_${k}`,p=WK.photos[id];return `<td><div class="wkslot" data-slot="${id}" draggable="${p?'true':'false'}">${p?`<img src="${p.url}" alt=""><button class="x" data-rm="${id}" title="빼기">✕</button><span class="nm">${esc(p.name)}</span>`:'사진 없음<br>(눌러서 넣기)'}</div></td>`}).join('')+'</tr>';}
+  for(let di=0;di<7;di++){h+=`<tr><th>${WD[di]} ${md(addDays(st,di))}</th>`+WK_SLOTS.map(([m,k])=>{const id=`d${di}_${m}_${k}`,p=WK.photos[id];return `<td><div class="wkslot" data-slot="${id}" draggable="${p?'true':'false'}">${p?`<img src="${p.url}" alt=""><button class="x" data-rm="${id}" title="빼기">✕</button><span class="nm">${p.src==='shared'?'자동 · ':''}${esc(p.name)}</span>`:'사진 없음<br>(눌러서 넣기)'}</div></td>`}).join('')+'</tr>';}
   $('#wk_ph').innerHTML=h;
   $('#wk_clearph').disabled=!Object.keys(WK.photos).length;
+  wkSharedInfo();
 }
 async function wkAddFiles(list){
   const ws=$('#wk_ws').value,st=pd(ws),days={};let outside=0;const nodate=[];
@@ -488,7 +539,7 @@ async function wkDrop(dt,slot){
   if(out.length)wkAddFiles(out);
 }
 let wkOneSlot='';
-$('#wk_ph').addEventListener('click',e=>{const rm=e.target.closest('[data-rm]');if(rm){e.stopPropagation();const p=WK.photos[rm.dataset.rm];if(p)URL.revokeObjectURL(p.url);delete WK.photos[rm.dataset.rm];wkRenderPhotos();return;}
+$('#wk_ph').addEventListener('click',e=>{const rm=e.target.closest('[data-rm]');if(rm){e.stopPropagation();const p=WK.photos[rm.dataset.rm];if(p){if(p.src==='shared')WK.removed[rm.dataset.rm]=p.sig;URL.revokeObjectURL(p.url);}delete WK.photos[rm.dataset.rm];wkRenderPhotos();return;}
   const s=e.target.closest('[data-slot]');if(s){wkOneSlot=s.dataset.slot;$('#wk_one').click();}});
 $('#wk_one').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(f&&wkOneSlot){wkSetPhoto(wkOneSlot,await wkShrink(f),f.name);wkRenderPhotos();}};
 $('#wk_ph').addEventListener('dragstart',e=>{const s=e.target.closest('[data-slot]');if(s&&WK.photos[s.dataset.slot])e.dataTransfer.setData('text/wk-slot',s.dataset.slot);});
@@ -496,12 +547,13 @@ $('#wk_ph').addEventListener('dragover',e=>{const s=e.target.closest('[data-slot
 $('#wk_ph').addEventListener('dragleave',e=>{const s=e.target.closest('[data-slot]');if(s)s.classList.remove('over');});
 $('#wk_ph').addEventListener('drop',e=>{const s=e.target.closest('[data-slot]');if(!s)return;e.preventDefault();e.stopPropagation();s.classList.remove('over');
   const from=e.dataTransfer.getData('text/wk-slot');
-  if(from){const to=s.dataset.slot;if(from!==to){const a=WK.photos[from],b=WK.photos[to];if(b)WK.photos[from]=b;else delete WK.photos[from];WK.photos[to]=a;wkRenderPhotos();}return;}
+  if(from){const to=s.dataset.slot;if(from!==to){const a=WK.photos[from],b=WK.photos[to];if(a)a.src='manual';if(b)b.src='manual';if(b)WK.photos[from]=b;else delete WK.photos[from];WK.photos[to]=a;wkRenderPhotos();}return;}
   wkDrop(e.dataTransfer,s.dataset.slot);});
 const wkd=$('#wk_drop');
 wkd.onclick=e=>{if(e.target.tagName==='BUTTON')return;$('#wk_files').click();};
 $('#wk_pickdir').onclick=()=>$('#wk_dir').click();
-$('#wk_clearph').onclick=()=>{for(const k in WK.photos)URL.revokeObjectURL(WK.photos[k].url);WK.photos={};wkRenderPhotos();};
+$('#wk_clearph').onclick=()=>{for(const k in WK.photos){const p=WK.photos[k];if(p.src==='shared')WK.removed[k]=p.sig;URL.revokeObjectURL(p.url);}WK.photos={};wkRenderPhotos();};
+$('#wk_reload').onclick=async()=>{for(const k in WK.photos)URL.revokeObjectURL(WK.photos[k].url);WK.photos={};WK.removed={};wkRenderPhotos();const n=await wkLoadShared();wkMsg(n?`식단 사진 탭 사진 ${n}장을 다시 가져왔습니다.`:'식단 사진 탭에 이 주 날짜 사진이 없습니다.',!n);};
 ['dragenter','dragover'].forEach(t=>wkd.addEventListener(t,e=>{e.preventDefault();wkd.classList.add('over');}));
 ['dragleave','drop'].forEach(t=>wkd.addEventListener(t,e=>{e.preventDefault();wkd.classList.remove('over');}));
 wkd.addEventListener('drop',e=>{e.stopPropagation();wkDrop(e.dataTransfer);});
@@ -516,8 +568,8 @@ function wkRenderSet(){const sv=(WK.db&&WK.db.settings)||{};$('#wk_set').innerHT
 $('#wk_set').addEventListener('change',async()=>{const s=wkSettings();if(WK.db)WK.db.settings=s;try{const r=await fetch('/api/weekly/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({settings:s})});if(!r.ok)throw 0;wkMsg('설정을 저장했습니다.');}catch(_){wkMsg('설정을 서버에 저장하지 못했습니다.',true);}});
 // 주 이동
 let wkPhotoWeek='';
-function wkClearIfWeekChanged(){const ws=$('#wk_ws').value;if(wkPhotoWeek&&wkPhotoWeek!==ws&&Object.keys(WK.photos).length){for(const k in WK.photos)URL.revokeObjectURL(WK.photos[k].url);WK.photos={};wkMsg('주를 바꿔서 넣어 둔 사진을 비웠습니다.');}wkPhotoWeek=ws;}
-function wkRefresh(){wkRenderMenu();wkRenderDb();wkRenderPhotos();}
+function wkClearIfWeekChanged(){const ws=$('#wk_ws').value;if(wkPhotoWeek&&wkPhotoWeek!==ws){for(const k in WK.photos)URL.revokeObjectURL(WK.photos[k].url);WK.photos={};WK.removed={};}wkPhotoWeek=ws;}
+function wkRefresh(){wkRenderMenu();wkRenderDb();wkRenderPhotos();wkLoadShared();}
 $('#wk_ws').onchange=()=>{const v=$('#wk_ws').value;if(!v)return;$('#wk_ws').value=fd(mondayOf(pd(v)));wkClearIfWeekChanged();wkRefresh();};
 $('#wk_prev').onclick=()=>{$('#wk_ws').value=fd(addDays(pd($('#wk_ws').value),-7));wkClearIfWeekChanged();wkRefresh();};
 $('#wk_next').onclick=()=>{$('#wk_ws').value=fd(addDays(pd($('#wk_ws').value),7));wkClearIfWeekChanged();wkRefresh();};
