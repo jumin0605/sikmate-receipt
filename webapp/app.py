@@ -540,6 +540,66 @@ def healthz():
     return {"ok": True, "gemini_key": bool(os.environ.get("GEMINI_API_KEY"))}
 
 
+# ---------------------------------------------------------------------------
+# 신태양 식단표·발주서 생성기: 작업 내용을 서버에 저장해 PC가 바뀌어도 이어서 쓴다
+# MENU_STORE_DIR 에 영구 디스크 경로를 지정하면 재배포 뒤에도 남는다 (없으면 DATA_DIR/menu_store, 재배포 때 초기화될 수 있음)
+# ---------------------------------------------------------------------------
+MENU_STORE_PERSISTENT = bool(os.environ.get("MENU_STORE_DIR", "").strip())
+MENU_STORE_DIR = Path(os.environ.get("MENU_STORE_DIR", "").strip() or (DATA_DIR / "menu_store")).resolve()
+MENU_STATE_MAX_BYTES = 4_000_000
+_menu_lock = threading.Lock()
+
+
+def _menu_state_path() -> Path:
+    return MENU_STORE_DIR / "menu_state.json"
+
+
+def _menu_state_read() -> dict:
+    p = _menu_state_path()
+    if p.is_file():
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(d, dict) and isinstance(d.get("rev"), int):
+                return d
+        except Exception:
+            pass
+    return {"rev": 0, "data": {}}
+
+
+class MenuStateIn(BaseModel):
+    base_rev: int
+    data: dict
+
+
+@app.get("/api/menu/state")
+def menu_state_get(rc_auth: str | None = Cookie(default=None)):
+    _check_auth(rc_auth)
+    with _menu_lock:
+        cur = _menu_state_read()
+    return JSONResponse({**cur, "persistent": MENU_STORE_PERSISTENT}, headers={"Cache-Control": "no-store"})
+
+
+@app.put("/api/menu/state")
+def menu_state_put(body: MenuStateIn, rc_auth: str | None = Cookie(default=None)):
+    _check_auth(rc_auth)
+    raw = json.dumps(body.data, ensure_ascii=False)
+    if len(raw.encode("utf-8")) > MENU_STATE_MAX_BYTES:
+        raise HTTPException(413, "저장할 내용이 너무 큽니다.")
+    with _menu_lock:
+        cur = _menu_state_read()
+        if body.base_rev != cur["rev"]:
+            return JSONResponse({**cur, "persistent": MENU_STORE_PERSISTENT}, status_code=409)
+        new = {"rev": cur["rev"] + 1, "saved_at": time.time(), "data": body.data}
+        MENU_STORE_DIR.mkdir(parents=True, exist_ok=True)
+        p = _menu_state_path()
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(new, ensure_ascii=False), encoding="utf-8")
+        if p.is_file():
+            shutil.copyfile(p, p.with_suffix(".bak"))
+        os.replace(tmp, p)
+    return {"rev": new["rev"], "saved_at": new["saved_at"], "persistent": MENU_STORE_PERSISTENT}
+
+
 @app.post("/api/jobs")
 async def create_job(files: list[UploadFile] = File(...), rc_auth: str | None = Cookie(default=None),
                      opt_crop: str | None = Form(None), opt_deskew: str | None = Form(None),
