@@ -54,6 +54,32 @@ table{border-collapse:collapse;background:#fff}
 .fx td,.fx th{border:1px solid #c8d0db;padding:2px 4px}
 .fx input{width:100%;border:0;font-family:inherit;font-size:12.5px;padding:3px}
 .small{font-size:11px;color:#777}
+#tab-weekly h3{font-size:14px;margin:16px 0 6px;color:#1f4e78}
+#wk_menu{width:100%;table-layout:fixed}
+#wk_menu th,#wk_menu td{border:1px solid #9aa5b4;padding:3px 4px;font-size:12px;text-align:center;vertical-align:top}
+#wk_menu th{background:#dde6f0}
+#wk_menu td.lab{background:#eef2f7;font-weight:bold;width:62px}
+#wk_menu td.main{font-weight:bold}
+#wk_menu td.miss{background:#fff3cd}
+.wkdb{border-collapse:collapse;background:#fff;width:100%}
+.wkdb th,.wkdb td{border:1px solid #c5ccd6;padding:2px;font-size:12px}
+.wkdb th{background:#eef2f7;font-weight:normal}
+.wkdb input{width:100%;border:0;padding:4px 3px;font-size:12px;font-family:inherit;background:transparent}
+.wkdb input:focus{outline:2px solid #1f4e78;background:#fffbe6}
+.wkdb tr.guess input{color:#8a6d00}
+.wkdrop{border:2px dashed #94a3b8;border-radius:8px;padding:12px;text-align:center;color:#475569;background:#f8fafc;cursor:pointer;margin-bottom:8px}
+.wkdrop.over{border-color:#1f4e78;background:#eaf4ff}
+.wkph{width:100%;border-collapse:collapse;table-layout:fixed;background:#fff}
+.wkph th,.wkph td{border:1px solid #c5ccd6;padding:3px;font-size:12px;text-align:center}
+.wkph th{background:#dde6f0}
+.wkslot{position:relative;height:92px;display:flex;align-items:center;justify-content:center;background:#f1f5f9;border-radius:4px;cursor:pointer;color:#94a3b8;font-size:11px;overflow:hidden}
+.wkslot img{max-width:100%;max-height:100%;display:block}
+.wkslot.over{outline:3px solid #1f4e78}
+.wkslot .x{position:absolute;right:2px;top:2px;background:rgba(0,0,0,.6);color:#fff;border:0;border-radius:3px;font-size:11px;cursor:pointer;padding:0 5px}
+.wkslot .nm{position:absolute;left:0;right:0;bottom:0;background:rgba(15,23,42,.65);color:#fff;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:1px 3px}
+.wkset{display:flex;flex-wrap:wrap;gap:10px;background:#fff;padding:10px 12px;border:1px solid #d5dbe3;border-radius:6px}
+.wkset label{display:flex;flex-direction:column;font-size:11px;color:#555;gap:3px}
+.wkset input{padding:5px 6px;border:1px solid #b9c2cf;border-radius:4px;font-size:13px;width:120px;font-family:inherit}
 @media print{
  body{background:#fff}.noprint,.top,.bar,.hint,.warn,.legend{display:none!important}
  section{padding:0}.paper{border:0;padding:0;max-width:none}
@@ -64,7 +90,7 @@ table{border-collapse:collapse;background:#fff}
 }
 </style></head><body>
 <div class="top noprint"><h1>신태양 식단표 · 발주서 생성기</h1>
-<nav><button data-tab="menu" class="on">식단표</button><button data-tab="order">발주서</button><button data-tab="fixed">고정품목 · 설정</button></nav>
+<nav><button data-tab="menu" class="on">식단표</button><button data-tab="order">발주서</button><button data-tab="fixed">고정품목 · 설정</button><button data-tab="weekly">주간 서류(엑셀)</button></nav>
 <span id="savemsg"></span></div>
 
 <section id="tab-menu" class="on">
@@ -108,6 +134,25 @@ table{border-collapse:collapse;background:#fff}
  <div class="fx" id="fxwrap"></div>
 </section>
 
+<section id="tab-weekly">
+ <div class="bar noprint">
+  <label>주 시작일(월요일)<input type="date" id="wk_ws"></label>
+  <button class="b sub" id="wk_prev">◀ 이전 주</button><button class="b sub" id="wk_next">다음 주 ▶</button>
+  <button class="b" id="wk_dl">주간 식단표·검식일지 엑셀(.xlsm) 내려받기</button>
+  <span id="wk_msg" class="small" style="font-size:12.5px"></span>
+ </div>
+ <div class="hint">N드라이브의 주별 파일(예: <b>11월-11.16~11.22식단표_검식일지.xlsm</b>)과 같은 모양으로 만듭니다. 설정 · 식단표 · 메뉴DB · 보존식기록표 · 주간식단표(사진) · 보존식 기록지(사진) · 검식일지(월~일) 14개 시트가 들어가고, 날짜·메뉴·검사항목은 엑셀에서 열면 자동으로 채워집니다.</div>
+ <h3>1. 이 주 식단 <span class="small">(고치려면 ‘식단표’ 탭에서 고치세요. 노란 칸은 검식일지 메뉴DB에 없는 주메뉴)</span></h3>
+ <table id="wk_menu"></table>
+ <h3>2. 검식일지 메뉴DB <span class="small" id="wk_dbinfo"></span></h3>
+ <div id="wk_db"></div>
+ <h3>3. 사진 <span class="small">— 식단 사진 탭에서 정리한 사진(예: 26-11-16_월요일(1)~(4))이나 폴더를 통째로 끌어다 놓으세요. 같은 날 (1) 중식 보존식, (2) 중식 식판, (3) 석식 보존식, (4) 석식 식판 칸에 들어갑니다. 칸끼리 끌어서 자리를 바꿀 수 있습니다.</span></h3>
+ <div class="wkdrop" id="wk_drop">사진·폴더를 여기에 끌어다 놓거나 눌러서 고르세요 <button class="b sub" id="wk_pickdir" style="margin-left:8px">폴더 선택</button> <button class="b sub" id="wk_clearph">사진 모두 빼기</button></div>
+ <input type="file" id="wk_files" accept="image/*" multiple hidden><input type="file" id="wk_dir" webkitdirectory directory multiple hidden><input type="file" id="wk_one" accept="image/*" hidden>
+ <table class="wkph" id="wk_ph"></table>
+ <h3>4. 설정 <span class="small">(바꾸면 서버에 저장되어 다음 주에도 그대로 씁니다)</span></h3>
+ <div class="wkset" id="wk_set"></div>
+</section>
 <datalist id="dl-밥"></datalist><datalist id="dl-국"></datalist><datalist id="dl-주메뉴"></datalist><datalist id="dl-부찬"></datalist><datalist id="dl-김치"></datalist><datalist id="dl-간식"></datalist><datalist id="dl-ing"></datalist>
 
 <script>
@@ -136,7 +181,7 @@ $('#dl-간식').innerHTML=D.snacks.map(m=>`<option value="${esc(m)}">`).join('')
 $('#dl-ing').innerHTML=Object.keys(D.ing).map(m=>`<option value="${esc(m)}">`).join('');
 const DLK={밥:'밥',국:'국',주메뉴:'주메뉴',조림볶음:'부찬',무침:'부찬',김치:'김치'};
 // ---------- tabs
-document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id==='tab-'+b.dataset.tab));if(b.dataset.tab==='fixed')renderFixed();});
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id==='tab-'+b.dataset.tab));if(b.dataset.tab==='fixed')renderFixed();if(b.dataset.tab==='weekly')wkOpen();});
 // ---------- week model
 function autoPattern(ws){
   if(D.weekMap[ws])return D.weekMap[ws];
@@ -358,6 +403,148 @@ document.addEventListener('visibilitychange',async()=>{if(document.visibilitySta
 $('#syncnow').onclick=syncInit;
 $('#exportbk').onclick=()=>{const b=new Blob([JSON.stringify({kind:'sty-menu-backup',at:new Date().toISOString(),data:payload()})],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='신태양_식단발주_백업_'+fd(new Date())+'.json';a.click();};
 $('#importbk').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const j=JSON.parse(await f.text());if(j.kind!=='sty-menu-backup')throw 0;const ch=mergeInto(S,j.data);saveLocal();schedulePush();refreshAll();alert(ch?'백업에서 더 최신인 내용을 가져왔습니다.':'가져올 새 내용이 없습니다(이미 더 최신).');}catch(err){alert('백업 파일을 읽지 못했습니다.');}e.target.value='';};
+
+// ---------- 주간 서류(엑셀): 식단표·검식일지 .xlsm
+const WK={db:null,photos:{},loaded:false};
+const WK_SLOTS=[['lunch','keep','중식 보존식'],['lunch','tray','중식 식판'],['dinner','keep','석식 보존식'],['dinner','tray','석식 식판']];
+const WK_SET=[['inspector','검식자','손성임'],['inspect_time','검식시간','10시45분'],['lunch_time','채취시간(중식)','11시00분'],['dinner_time','채취시간(석식)','16시00분'],['freezer','냉동고 온도','-18℃'],['keep_days','보존식 보관일수','6'],['keeper','담당자/채취자','영양사'],['sat_keeper','토요일 채취자','조리사'],['sun_keeper','일요일 채취자','요양사']];
+function wkMsg(t,err){const m=$('#wk_msg');m.textContent=t||'';m.style.color=err?'#c0392b':'#1f4e78';}
+async function wkLoadDb(){
+  try{const r=await fetch('/api/weekly/menudb',{cache:'no-store'});if(!r.ok)throw new Error(r.status);WK.db=await r.json();}
+  catch(e){WK.db=null;wkMsg('메뉴DB를 불러오지 못했습니다. 새로고침해 주세요.',true);}
+}
+function wkWeek(){return ensureWeek($('#wk_ws').value);}
+function wkMains(){const w=wkWeek(),out=[];w.days.forEach((d,di)=>['중식','석식'].forEach(m=>{const v=(d[m]['주메뉴']||'').trim();if(v)out.push({v,di,m});}));return out;}
+function wkKnown(n){return !!(WK.db&&(WK.db.base[n]||WK.db.extra[n]));}
+function wkGuess(n){ // 이름 끝이 가장 많이 겹치는 메뉴의 검사항목을 빌려 온다
+  const all=Object.assign({},WK.db.base,WK.db.extra);let best=null,bl=0;
+  for(const k in all){let i=0;while(i<k.length&&i<n.length&&k[k.length-1-i]===n[n.length-1-i])i++;if(i>bl&&all[k].some(x=>x)){bl=i;best=k;}}
+  return best?{from:best,vals:all[best].slice()}:{from:'',vals:Array(11).fill('')};
+}
+function wkRenderMenu(){
+  const ws=$('#wk_ws').value,w=wkWeek(),st=pd(ws);
+  let h='<colgroup><col style="width:62px"><col style="width:78px">'+'<col>'.repeat(7)+'</colgroup><tr><th>구분</th><th></th>'+WD.map((n,i)=>`<th>${n} ${md(addDays(st,i))}</th>`).join('')+'</tr>';
+  for(const meal of ['중식','석식'])ROLES.forEach((r,ri)=>{h+='<tr>'+(ri===0?`<td class="lab" rowspan="6">${meal}</td>`:'')+`<td>${RL[r]}</td>`+w.days.map(d=>{const v=d[meal][r]||'';const cls=r==='주메뉴'?('main'+(v&&WK.db&&!wkKnown(v)?' miss':'')):'';return `<td class="${cls}">${esc(v)}</td>`}).join('')+'</tr>'});
+  for(const sn of ['오전','오후'])h+=`<tr><td class="lab" colspan="2">${sn}간식</td>`+w.days.map(d=>`<td>${esc(d[sn]||'')}</td>`).join('')+'</tr>';
+  $('#wk_menu').innerHTML=h;
+}
+function wkRenderDb(){
+  if(!WK.db){$('#wk_db').innerHTML='<div class="warn">메뉴DB를 불러오는 중이거나 불러오지 못했습니다.</div>';return;}
+  const mains=wkMains(),miss=[...new Set(mains.map(x=>x.v).filter(v=>!wkKnown(v)))];
+  const extraHere=[...new Set(mains.map(x=>x.v).filter(v=>WK.db.extra[v]))];
+  $('#wk_dbinfo').textContent=`(이 주 주메뉴 ${new Set(mains.map(x=>x.v)).size}개 중 ${miss.length?miss.length+'개가 메뉴DB에 없음':'모두 등록됨'} · 등록 메뉴 ${Object.keys(WK.db.base).length+Object.keys(WK.db.extra).filter(k=>!WK.db.base[k]).length}개)`;
+  const rows=miss.map(n=>{const g=wkGuess(n);return{n,vals:g.vals,from:g.from,guess:true}}).concat(extraHere.map(n=>({n,vals:WK.db.extra[n].slice(),guess:false})));
+  if(!rows.length){$('#wk_db').innerHTML='<div class="hint">이 주 주메뉴는 모두 메뉴DB에 있어서 검식일지 검사항목이 자동으로 채워집니다.</div>';return;}
+  let h='<div class="hint">메뉴DB에 없는 주메뉴는 검식일지 검사항목이 비어 나옵니다. 비슷한 메뉴 값을 미리 넣어 두었으니(갈색 글씨) 확인하고 <b>저장</b>을 누르세요. 저장하면 다음에도 계속 씁니다.</div><table class="wkdb"><tr><th style="width:110px">메뉴명</th>'+WK.db.cols.map(c=>`<th>${esc(c)}</th>`).join('')+'<th style="width:70px"></th></tr>';
+  rows.forEach((r,i)=>{h+=`<tr class="${r.guess?'guess':''}" data-n="${esc(r.n)}"><td><b>${esc(r.n)}</b>${r.guess&&r.from?`<div class="small">참고: ${esc(r.from)}</div>`:''}</td>`+r.vals.map((v,j)=>`<td><input data-j="${j}" value="${esc(v)}"></td>`).join('')+`<td><button class="b" data-save="${i}">${r.guess?'저장':'고쳐 저장'}</button></td></tr>`;});
+  $('#wk_db').innerHTML=h+'</table>';
+}
+$('#wk_db').addEventListener('input',e=>{const tr=e.target.closest('tr');if(tr)tr.classList.remove('guess');});
+$('#wk_db').addEventListener('click',async e=>{
+  const b=e.target.closest('[data-save]');if(!b)return;const tr=b.closest('tr'),n=tr.dataset.n;
+  const vals=[...tr.querySelectorAll('input')].map(x=>x.value.trim());
+  b.disabled=true;
+  try{const r=await fetch('/api/weekly/menudb',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,values:vals})});if(!r.ok)throw 0;WK.db.extra[n]=vals;wkMsg(`‘${n}’을(를) 메뉴DB에 저장했습니다.`);wkRenderMenu();wkRenderDb();}
+  catch(_){b.disabled=false;wkMsg('저장하지 못했습니다. 다시 눌러 주세요.',true);}
+});
+// 사진
+function wkDateFromName(s){s=String(s||'');let m;const ok=(y,mo,d)=>{y=+y;if(y<100)y+=2000;const t=new Date(y,mo-1,d);return(t.getMonth()===mo-1&&mo>=1&&d>=1&&y>=2000&&y<2100)?fd(t):'';};
+  if((m=s.match(/(20\d{2})[._-]?(\d{2})[._-]?(\d{2})/))){const r=ok(m[1],+m[2],+m[3]);if(r)return r;}
+  if((m=s.match(/(?:^|[^\d])(\d{2})[._-](\d{1,2})[._-](\d{1,2})(?:[^\d]|$)/))){const r=ok(m[1],+m[2],+m[3]);if(r)return r;}
+  if((m=s.match(/(?:^|[^\d])(\d{2})(\d{2})(\d{2})(?:[^\d]|$)/))){const r=ok(m[1],+m[2],+m[3]);if(r)return r;}
+  return '';}
+function wkNum(name){const m=String(name).match(/\((\d{1,2})\)\s*\.[a-z]+$/i);return m?+m[1]:0;}
+async function wkShrink(file){
+  let bmp;try{bmp=await createImageBitmap(file,{imageOrientation:'from-image'});}catch(e){bmp=await new Promise((ok,no)=>{const i=new Image(),u=URL.createObjectURL(file);i.onload=()=>ok(i);i.onerror=no;i.src=u;});}
+  const s=Math.min(1,900/Math.max(bmp.width,bmp.height)),c=document.createElement('canvas');c.width=Math.round(bmp.width*s);c.height=Math.round(bmp.height*s);
+  c.getContext('2d').drawImage(bmp,0,0,c.width,c.height);if(bmp.close)bmp.close();
+  return await new Promise(ok=>c.toBlob(ok,'image/jpeg',0.85));
+}
+function wkSetPhoto(slot,blob,name){const old=WK.photos[slot];if(old)URL.revokeObjectURL(old.url);WK.photos[slot]={blob,name,url:URL.createObjectURL(blob)};}
+function wkRenderPhotos(){
+  const st=pd($('#wk_ws').value);let h='<tr><th style="width:70px"></th>'+WK_SLOTS.map(s=>`<th>${s[2]}</th>`).join('')+'</tr>';
+  for(let di=0;di<7;di++){h+=`<tr><th>${WD[di]} ${md(addDays(st,di))}</th>`+WK_SLOTS.map(([m,k])=>{const id=`d${di}_${m}_${k}`,p=WK.photos[id];return `<td><div class="wkslot" data-slot="${id}" draggable="${p?'true':'false'}">${p?`<img src="${p.url}" alt=""><button class="x" data-rm="${id}" title="빼기">✕</button><span class="nm">${esc(p.name)}</span>`:'사진 없음<br>(눌러서 넣기)'}</div></td>`}).join('')+'</tr>';}
+  $('#wk_ph').innerHTML=h;
+  $('#wk_clearph').disabled=!Object.keys(WK.photos).length;
+}
+async function wkAddFiles(list){
+  const ws=$('#wk_ws').value,st=pd(ws),days={};let outside=0;const nodate=[];
+  const imgs=list.filter(x=>/^image\//.test(x.f.type)||/\.(jpe?g|png|webp|bmp)$/i.test(x.f.name));const skipped=list.length-imgs.length;
+  for(const x of imgs){let d=wkDateFromName(x.f.name);if(!d){const parts=(x.path||'').split('/');parts.pop();for(let i=parts.length-1;i>=0&&!d;i--)d=wkDateFromName(parts[i]);}
+    if(!d){nodate.push(x);continue;}const di=Math.round((pd(d)-st)/864e5);if(di<0||di>6){outside++;continue;}(days[di]=days[di]||[]).push(x);}
+  let put=0;wkMsg('사진 넣는 중…');
+  for(const di in days){const arr=days[di].sort((a,b)=>(wkNum(a.f.name)-wkNum(b.f.name))||a.f.name.localeCompare(b.f.name,'ko',{numeric:true}));
+    for(let k=0;k<arr.length&&k<4;k++){const n=wkNum(arr[k].f.name),idx=(n>=1&&n<=4)?n-1:k;const [m,kd]=WK_SLOTS[idx];wkSetPhoto(`d${di}_${m}_${kd}`,await wkShrink(arr[k].f),arr[k].f.name);put++;}}
+  for(const x of nodate){const empty=[];for(let di=0;di<7;di++)for(const [m,k] of WK_SLOTS)if(!WK.photos[`d${di}_${m}_${k}`])empty.push(`d${di}_${m}_${k}`);if(!empty.length)break;wkSetPhoto(empty[0],await wkShrink(x.f),x.f.name);put++;}
+  wkRenderPhotos();
+  wkMsg(`사진 ${put}장을 넣었습니다.`+(outside?` 이 주 날짜가 아닌 사진 ${outside}장은 뺐습니다.`:'')+(nodate.length?` 날짜를 못 읽은 ${nodate.length}장은 빈 칸에 차례로 넣었습니다.`:'')+(skipped?` 사진이 아닌 파일 ${skipped}개는 건너뛰었습니다.`:''),!put);
+}
+function wkEntries(dir){return new Promise(ok=>{const r=dir.createReader();let out=[];(function nx(){r.readEntries(b=>{if(!b.length)ok(out);else{out=out.concat([...b]);nx();}},()=>ok(out));})();});}
+async function wkWalk(en,out){if(en.isFile)await new Promise(ok=>en.file(f=>{out.push({f,path:en.fullPath.replace(/^\//,'')});ok();},()=>ok()));else if(en.isDirectory)for(const k of await wkEntries(en))await wkWalk(k,out);}
+async function wkDrop(dt,slot){
+  const ens=[],loose=[];for(const it of [...(dt.items||[])]){if(it.kind!=='file')continue;const en=it.webkitGetAsEntry&&it.webkitGetAsEntry();if(en)ens.push(en);else{const f=it.getAsFile();if(f)loose.push({f,path:f.name});}}
+  const out=loose.slice();for(const en of ens)await wkWalk(en,out);
+  if(slot&&out.length===1){wkSetPhoto(slot,await wkShrink(out[0].f),out[0].f.name);wkRenderPhotos();return;}
+  if(out.length)wkAddFiles(out);
+}
+let wkOneSlot='';
+$('#wk_ph').addEventListener('click',e=>{const rm=e.target.closest('[data-rm]');if(rm){e.stopPropagation();const p=WK.photos[rm.dataset.rm];if(p)URL.revokeObjectURL(p.url);delete WK.photos[rm.dataset.rm];wkRenderPhotos();return;}
+  const s=e.target.closest('[data-slot]');if(s){wkOneSlot=s.dataset.slot;$('#wk_one').click();}});
+$('#wk_one').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(f&&wkOneSlot){wkSetPhoto(wkOneSlot,await wkShrink(f),f.name);wkRenderPhotos();}};
+$('#wk_ph').addEventListener('dragstart',e=>{const s=e.target.closest('[data-slot]');if(s&&WK.photos[s.dataset.slot])e.dataTransfer.setData('text/wk-slot',s.dataset.slot);});
+$('#wk_ph').addEventListener('dragover',e=>{const s=e.target.closest('[data-slot]');if(s){e.preventDefault();s.classList.add('over');}});
+$('#wk_ph').addEventListener('dragleave',e=>{const s=e.target.closest('[data-slot]');if(s)s.classList.remove('over');});
+$('#wk_ph').addEventListener('drop',e=>{const s=e.target.closest('[data-slot]');if(!s)return;e.preventDefault();e.stopPropagation();s.classList.remove('over');
+  const from=e.dataTransfer.getData('text/wk-slot');
+  if(from){const to=s.dataset.slot;if(from!==to){const a=WK.photos[from],b=WK.photos[to];if(b)WK.photos[from]=b;else delete WK.photos[from];WK.photos[to]=a;wkRenderPhotos();}return;}
+  wkDrop(e.dataTransfer,s.dataset.slot);});
+const wkd=$('#wk_drop');
+wkd.onclick=e=>{if(e.target.tagName==='BUTTON')return;$('#wk_files').click();};
+$('#wk_pickdir').onclick=()=>$('#wk_dir').click();
+$('#wk_clearph').onclick=()=>{for(const k in WK.photos)URL.revokeObjectURL(WK.photos[k].url);WK.photos={};wkRenderPhotos();};
+['dragenter','dragover'].forEach(t=>wkd.addEventListener(t,e=>{e.preventDefault();wkd.classList.add('over');}));
+['dragleave','drop'].forEach(t=>wkd.addEventListener(t,e=>{e.preventDefault();wkd.classList.remove('over');}));
+wkd.addEventListener('drop',e=>{e.stopPropagation();wkDrop(e.dataTransfer);});
+$('#wk_files').onchange=e=>{const l=[...e.target.files].map(f=>({f,path:f.name}));e.target.value='';if(l.length)wkAddFiles(l);};
+$('#wk_dir').onchange=e=>{const l=[...e.target.files].map(f=>({f,path:f.webkitRelativePath||f.name}));e.target.value='';if(l.length)wkAddFiles(l);};
+// 탭 안 다른 곳에 떨어뜨려도 새 창으로 열리지 않게
+document.addEventListener('dragover',e=>{if($('#tab-weekly').classList.contains('on'))e.preventDefault();});
+document.addEventListener('drop',e=>{if($('#tab-weekly').classList.contains('on')&&!e.defaultPrevented){e.preventDefault();wkDrop(e.dataTransfer);}});
+// 설정
+function wkSettings(){const o={};WK_SET.forEach(([k,l,d])=>{const el=$('#wks_'+k);o[k]=el?el.value.trim():d;});return o;}
+function wkRenderSet(){const sv=(WK.db&&WK.db.settings)||{};$('#wk_set').innerHTML=WK_SET.map(([k,l,d])=>`<label>${l}<input id="wks_${k}" value="${esc(sv[k]||d)}"></label>`).join('');}
+$('#wk_set').addEventListener('change',async()=>{const s=wkSettings();if(WK.db)WK.db.settings=s;try{const r=await fetch('/api/weekly/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({settings:s})});if(!r.ok)throw 0;wkMsg('설정을 저장했습니다.');}catch(_){wkMsg('설정을 서버에 저장하지 못했습니다.',true);}});
+// 주 이동
+let wkPhotoWeek='';
+function wkClearIfWeekChanged(){const ws=$('#wk_ws').value;if(wkPhotoWeek&&wkPhotoWeek!==ws&&Object.keys(WK.photos).length){for(const k in WK.photos)URL.revokeObjectURL(WK.photos[k].url);WK.photos={};wkMsg('주를 바꿔서 넣어 둔 사진을 비웠습니다.');}wkPhotoWeek=ws;}
+function wkRefresh(){wkRenderMenu();wkRenderDb();wkRenderPhotos();}
+$('#wk_ws').onchange=()=>{const v=$('#wk_ws').value;if(!v)return;$('#wk_ws').value=fd(mondayOf(pd(v)));wkClearIfWeekChanged();wkRefresh();};
+$('#wk_prev').onclick=()=>{$('#wk_ws').value=fd(addDays(pd($('#wk_ws').value),-7));wkClearIfWeekChanged();wkRefresh();};
+$('#wk_next').onclick=()=>{$('#wk_ws').value=fd(addDays(pd($('#wk_ws').value),7));wkClearIfWeekChanged();wkRefresh();};
+async function wkOpen(){
+  if(!$('#wk_ws').value)$('#wk_ws').value=$('#ws').value;
+  wkClearIfWeekChanged();
+  if(!WK.loaded){WK.loaded=true;wkRenderSet();wkRefresh();await wkLoadDb();wkRenderSet();}
+  wkRefresh();
+}
+$('#wk_dl').onclick=async()=>{
+  const ws=$('#wk_ws').value;if(!ws){wkMsg('주 시작일을 고르세요.',true);return;}
+  const w=wkWeek(),fdat=new FormData();
+  fdat.append('data',JSON.stringify({monday:ws,days:w.days,settings:wkSettings()}));
+  for(const k in WK.photos)fdat.append(k,WK.photos[k].blob,k+'.jpg');
+  const b=$('#wk_dl');b.disabled=true;wkMsg('엑셀 만드는 중… (사진이 많으면 10초쯤 걸립니다)');
+  try{
+    const r=await fetch('/api/weekly/xlsm',{method:'POST',body:fdat});
+    if(!r.ok){let t='';try{t=(await r.json()).detail}catch(_){}throw new Error(t||('오류 '+r.status));}
+    const blob=await r.blob(),cd=r.headers.get('Content-Disposition')||'';const m=cd.match(/filename\*=UTF-8''([^;]+)/);
+    const name=m?decodeURIComponent(m[1]):'식단표_검식일지.xlsm';
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},2000);
+    let info={};try{info=JSON.parse(decodeURIComponent(r.headers.get('X-Weekly-Info')||'%7B%7D'));}catch(_){}
+    const miss=info.missing_menudb||[];
+    wkMsg(`${name} 을(를) 내려받았습니다. 사진 ${info.photos||0}장`+(miss.length?` · 메뉴DB에 없는 주메뉴: ${miss.join(', ')} (검식일지 검사항목이 비어 나옵니다)`:''),!!miss.length);
+  }catch(e){wkMsg('엑셀을 만들지 못했습니다: '+e.message,true);}
+  finally{b.disabled=false;}
+};
 // ---------- init
 (function(){
   const today=new Date();
