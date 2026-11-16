@@ -501,7 +501,7 @@ def index(rc_auth: str | None = Cookie(default=None)):
     """실제 도구. 접속 코드가 설정돼 있으면 코드 확인 후에만 열린다."""
     if ACCESS_CODE and rc_auth != _token():
         return HTMLResponse(LOGIN_HTML.replace("{msg}", ""))
-    # 영수증 정리 · 신태양 식단표/발주서를 탭으로 오가는 화면 (각 도구는 아래 경로에서 불러온다)
+    # 영수증 정리 · 신태양 식단표/발주서 · 식단 사진을 탭으로 오가는 화면 (각 도구는 아래 경로에서 불러온다)
     return FileResponse(HERE / "static" / "shell.html", headers={"Cache-Control": "no-cache"})
 
 
@@ -522,13 +522,21 @@ def menu_page(rc_auth: str | None = Cookie(default=None)):
     return FileResponse(HERE / "static" / "menu.html", headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/photo", response_class=HTMLResponse)
+def photo_page(rc_auth: str | None = Cookie(default=None)):
+    """식단 사진 정리 (원근·기울기·회전·용량 맞추기·날짜 이름). 사진은 브라우저 안에서만 처리한다."""
+    if ACCESS_CODE and rc_auth != _token():
+        return HTMLResponse(LOGIN_HTML.replace("{msg}", "").replace("<button>", '<input type=hidden name=next value="/photo"><button>'))
+    return FileResponse(HERE / "static" / "photo.html", headers={"Cache-Control": "no-cache"})
+
+
 @app.post("/login")
 def login(code: str = Form(...), next: str = Form("/app")):
-    dest = "/menu" if next == "/menu" else "/app"
+    dest = next if next in ("/menu", "/photo") else "/app"
     if ACCESS_CODE and not secrets.compare_digest(code.strip(), ACCESS_CODE):
         page = LOGIN_HTML.replace("{msg}", "<p>코드가 맞지 않습니다.</p>")
-        if dest == "/menu":
-            page = page.replace("<button>", '<input type=hidden name=next value="/menu"><button>')
+        if dest != "/app":
+            page = page.replace("<button>", f'<input type=hidden name=next value="{dest}"><button>')
         return HTMLResponse(page, status_code=401)
     r = RedirectResponse(dest, status_code=303)
     r.set_cookie("rc_auth", _token(), max_age=30 * 86400, httponly=True, samesite="lax")
