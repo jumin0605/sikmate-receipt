@@ -665,7 +665,8 @@ def weekly_menudb(rc_auth: str | None = Cookie(default=None)):
         st = _weekly_store_read()
     return JSONResponse({"cols": weekly_book.DB_COLS, "base": weekly_book.template_menudb(), "extra": st["menus"],
                          "settings": st["settings"], "persistent": MENU_STORE_PERSISTENT,
-                         "template": st.get("template") if weekly_book.active_template() != weekly_book.TEMPLATE else None},
+                         "template": st.get("template") if weekly_book.active_template() != weekly_book.TEMPLATE else None,
+                         "template_vba": weekly_book.has_vba(weekly_book.active_template())},
                         headers={"Cache-Control": "no-store"})
 
 
@@ -788,7 +789,8 @@ async def weekly_xlsm(request: Request, rc_auth: str | None = Cookie(default=Non
         st = _weekly_store_read()
     settings = {**st["settings"], **{k: v for k, v in (data.get("settings") or {}).items() if k in weekly_book.SETTING_CELLS}}
     try:
-        name, blob, info = weekly_book.build_weekly(monday, data.get("days") or [], settings, st["menus"], photos)
+        name, blob, info = weekly_book.build_weekly(monday, data.get("days") or [], settings, st["menus"], photos,
+                                                    keep_macros=bool(data.get("keep_macros")))
     except ValueError as e:
         raise HTTPException(400, str(e))
     from urllib.parse import quote

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import re
+import zipfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -159,7 +160,8 @@ def _rename_menu_sheet(wb, new_title: str):
 
 
 def build_weekly(monday: date, days: list, settings: dict | None = None,
-                 extra_db: dict | None = None, photos: dict | None = None) -> tuple[str, bytes, dict]:
+                 extra_db: dict | None = None, photos: dict | None = None,
+                 keep_macros: bool = False) -> tuple[str, bytes, dict]:
     """주간 엑셀을 만든다. (파일이름, 내용, 요약) 을 돌려준다."""
     settings = settings or {}
     extra_db = extra_db or {}
@@ -247,7 +249,12 @@ def build_weekly(monday: date, days: list, settings: dict | None = None,
     wb.calculation.fullCalcOnLoad = True
     buf = io.BytesIO()
     wb.save(buf)
-    return output_name(monday), buf.getvalue(), {"missing_menudb": missing, "photos": len(placed), "bad_photos": bad}
+    out = buf.getvalue()
+    had = has_vba(out)
+    if had and not keep_macros:
+        out = strip_vba(out)
+    return output_name(monday), out, {"missing_menudb": missing, "photos": len(placed), "bad_photos": bad,
+                                       "macros": bool(had and keep_macros), "macros_removed": bool(had and not keep_macros)}
 
 
 # ---------------------------------------------------------------------------
@@ -483,3 +490,38 @@ def make_template(data: bytes) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def has_vba(data_or_path) -> bool:
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data_or_path) if isinstance(data_or_path, (bytes, bytearray)) else data_or_path)
+        return any(n.lower().startswith("xl/vbaproject") for n in z.namelist())
+    except Exception:
+        return False
+
+
+def strip_vba(data: bytes) -> bytes:
+    """매크로(vbaProject)만 빼고 나머지는 그대로 둔 .xlsm 을 만든다.
+    인터넷에서 받은 파일에 매크로가 있으면 엑셀이 '보안 위험'으로 막기 때문에, 웹에서 받는 파일은 기본으로 매크로를 뺀다."""
+    zin = zipfile.ZipFile(io.BytesIO(data))
+    drop = {n for n in zin.namelist() if n.lower().startswith("xl/vbaproject")}
+    if not drop:
+        return data
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+        for info in zin.infolist():
+            n = info.filename
+            if n in drop:
+                continue
+            b = zin.read(n)
+            if n == "[Content_Types].xml":
+                t = b.decode("utf-8")
+                t = re.sub(r'<Override[^>]*PartName="/xl/vbaProject[^"]*"[^>]*/>', "", t)
+                t = re.sub(r'<Default[^>]*Extension="bin"[^>]*ContentType="application/vnd\.ms-office\.vbaProject"[^>]*/>', "", t)
+                b = t.encode("utf-8")
+            elif n == "xl/_rels/workbook.xml.rels" or (n.startswith("xl/_rels/") and n.endswith(".rels")):
+                t = b.decode("utf-8")
+                t = re.sub(r'<Relationship[^>]*Target="[^"]*vbaProject[^"]*"[^>]*/>', "", t)
+                b = t.encode("utf-8")
+            zout.writestr(info, b)
+    return out.getvalue()

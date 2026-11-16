@@ -87,5 +87,22 @@ class ImportTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             wb.read_weekly(b"not an excel", "x.xlsm")
 
+class MacroTest(unittest.TestCase):
+    def test_strip_vba_keeps_xlsm(self):
+        import zipfile as zf
+        buf = io.BytesIO()
+        with zf.ZipFile(buf, "w") as z:
+            z.writestr("[Content_Types].xml", '<Types><Default Extension="bin" ContentType="application/vnd.ms-office.vbaProject"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.ms-excel.sheet.macroEnabled.main+xml"/></Types>')
+            z.writestr("xl/_rels/workbook.xml.rels", '<Relationships><Relationship Id="r9" Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" Target="vbaProject.bin"/></Relationships>')
+            z.writestr("xl/vbaProject.bin", b"x")
+        out = wb.strip_vba(buf.getvalue())
+        z = zf.ZipFile(io.BytesIO(out))
+        self.assertNotIn("xl/vbaProject.bin", z.namelist())
+        self.assertIn("macroEnabled", z.read("[Content_Types].xml").decode())
+        self.assertNotIn("vbaProject", z.read("[Content_Types].xml").decode())
+        self.assertNotIn("vbaProject", z.read("xl/_rels/workbook.xml.rels").decode())
+        self.assertFalse(wb.has_vba(out))
+
+
 if __name__ == "__main__":
     unittest.main()
