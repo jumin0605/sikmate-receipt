@@ -54,6 +54,19 @@ table{border-collapse:collapse;background:#fff}
 .fx td,.fx th{border:1px solid #c8d0db;padding:2px 4px}
 .fx input{width:100%;border:0;font-family:inherit;font-size:12.5px;padding:3px}
 .small{font-size:11px;color:#777}
+#insp_box{background:#f0f7ff;border:1px solid #9ec5ee;border-radius:6px;padding:8px 10px;margin:8px 0;font-size:12.5px;max-width:1010px}
+#insp_box .hd{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+#insp_box select,#insp_box input[type=text]{padding:4px 5px;border:1px solid #b9c2cf;border-radius:4px;font-family:inherit;font-size:12.5px}
+#insp_tbl{margin-top:8px;max-height:420px;overflow:auto;display:none}
+#insp_tbl.on{display:block}
+#insp_tbl table{width:100%;border-collapse:collapse;background:#fff}
+#insp_tbl th,#insp_tbl td{border:1px solid #c5ccd6;padding:2px 4px;font-size:12px}
+#insp_tbl th{background:#eef2f7;font-weight:normal;position:sticky;top:0}
+#insp_tbl tr.nomatch td{background:#fff8e1}
+#insp_tbl tr.skip td{color:#9aa}
+#insp_tbl select{max-width:180px}
+#insp_tbl input[type=text]{width:100%;border:0;background:transparent}
+#insp_msg{margin-left:6px;color:#1f4e78}
 #tab-weekly h3{font-size:14px;margin:16px 0 6px;color:#1f4e78}
 #wk_menu{width:100%;table-layout:fixed}
 #wk_menu th,#wk_menu td{border:1px solid #9aa5b4;padding:3px 4px;font-size:12px;text-align:center;vertical-align:top}
@@ -150,6 +163,18 @@ table{border-collapse:collapse;background:#fff}
   <button class="b sub" id="saveo">저장</button><button class="b sub" id="printo">인쇄</button><button class="b sub" id="xlso">엑셀(.xls) 저장</button>
  </div>
  <div class="hint noprint">발주일을 고르면 식단 기간은 발주일부터 7일로 자동 설정됩니다. 월요일 발주는 한 주 전체, 목요일 발주는 목~다음 주 수요일처럼 직접 조정하세요. 체크를 끄면 인쇄·엑셀에서 빠집니다.</div>
+ <div id="insp_box" class="noprint">
+  <div class="hd"><b>검수서 → 비고 채우기</b>
+   <select id="insp_src" title="영수증 정리 탭의 '식자재 검수서 원산지 표시'에서 만든 검수서 (검수 날짜)"></select>
+   <button class="b sub" id="insp_filebtn" title="예전에 만든 '원산지 표시_26.11.16.xlsx' 같은 검수서 엑셀에서 가져옵니다">검수서 엑셀에서 가져오기</button>
+   <input type="file" id="insp_file" accept=".xlsx,.xlsm" hidden>
+   <label title="날짜 앞에 붙일 말">날짜 앞 <select id="insp_lbl"><option value="유통">유통</option><option value="소비">소비</option><option value="">(없음)</option></select></label>
+   <label><input type="checkbox" id="insp_over"> 이미 적힌 비고도 바꾸기</label>
+   <button class="b" id="insp_apply">비고에 적용</button>
+   <span id="insp_msg"></span></div>
+  <div class="small">영수증 정리 탭에서 검수서 사진 이름(예: ‘느타리버섯 26.11.16 국내산’)을 읽으면 여기서 고를 수 있습니다. 날짜가 검수 날짜와 같으면(입고일) 유통기한이 아니라고 보고 원산지만 적습니다. 아래 표에서 연결할 품목과 비고를 고친 뒤 ‘비고에 적용’을 누르세요.</div>
+  <div id="insp_tbl"></div>
+ </div>
  <div id="warnbox"></div>
  <div class="paper"><h2>발 주 서</h2>
   <div class="meta"><b>발주일시 :</b><span id="m_od"></span><b>납품업체 :</b><span id="m_v"></span><b>입 고 일 :</b><span id="m_rd"></span><b>담 당 자 :</b><span id="m_dt"></span></div>
@@ -283,7 +308,7 @@ $('#dl-간식').innerHTML=D.snacks.map(m=>`<option value="${esc(m)}">`).join('')
 $('#dl-ing').innerHTML=Object.keys(D.ing).map(m=>`<option value="${esc(m)}">`).join('');
 const DLK={밥:'밥',국:'국',주메뉴:'주메뉴',조림볶음:'부찬',무침:'부찬',김치:'김치'};
 // ---------- tabs
-document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id==='tab-'+b.dataset.tab));if(b.dataset.tab==='fixed')renderFixed();if(b.dataset.tab==='weekly')wkOpen();});
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id==='tab-'+b.dataset.tab));if(b.dataset.tab==='fixed')renderFixed();if(b.dataset.tab==='order')inspRefresh();if(b.dataset.tab==='weekly')wkOpen();});
 // ---------- week model
 function autoPattern(ws){
   if(D.weekMap[ws])return D.weekMap[ws];
@@ -356,7 +381,7 @@ function setDefaultsOrder(){
   $('#rd').value=$('#od').value;$('#pf').value=$('#od').value;$('#pt').value=fd(addDays(od,6));
   const wd=(od.getDay()+6)%7;$('#md').value=fd(wd===0?od:addDays(od,7-wd));
 }
-$('#od').onchange=()=>{setDefaultsOrder();const k=$('#od').value;if(S.orders[k]){ORD=clone(S.orders[k]);loadMeta();renderOrder();}else buildOrder();};
+$('#od').onchange=()=>{setDefaultsOrder();const k=$('#od').value;if(S.orders[k]){ORD=clone(S.orders[k]);loadMeta();renderOrder();}else buildOrder();inspFillSrc();inspBuild();};
 function loadMeta(){const m=ORD.meta||{};for(const k of ['od','rd','pf','pt','md'])if(m[k])$('#'+k).value=m[k];}
 function buildOrder(){
   const f=$('#pf').value,t=$('#pt').value;if(!f||!t)return;
@@ -894,12 +919,130 @@ peEl('pe_prev').onclick=()=>{const l=peSlots(),i=l.indexOf(PE.slot);if(i>0)peOpe
 peEl('pe_next').onclick=()=>{const l=peSlots(),i=l.indexOf(PE.slot);if(i>=0&&i<l.length-1)peOpen(l[i+1]);};
 window.addEventListener('resize',()=>{if(PE.slot)peDraw();});
 document.addEventListener('keydown',e=>{if(!PE.slot)return;if(e.key==='Escape')peClose();else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();peEl('pe_undo').click();}});
+
+// ---------- 검수서(원산지 표시) → 발주서 비고
+const INSP={src:null,rows:[],sig:''};
+const INSP_KEY='sikmateInspections';
+// 검수서 이름 → 발주서 품목 (자주 다르게 쓰는 이름)
+const INSP_ALIAS={'닭고기':['닭다리살','닭정육','닭'],'간마늘':['다진마늘'],'깐마늘':['다진마늘','깐마늘'],'마늘':['다진마늘','깐마늘'],'데친연근':['편연근'],'연근':['편연근'],
+ '뉴슈가분말':['슈가'],'뉴슈가':['슈가'],'훈제오리':['오리훈제'],'순대':['찰순대'],'해물모둠':['냉동해물'],'모둠해물':['냉동해물'],'참깨':['볶음참깨'],'무':['무우'],'배추':['통배추'],
+ '이오요구르트':['이오'],'만두':['김치만두','고기만두'],'고기손만두':['고기만두'],'어묵':['부산어묵','어묵'],'소시지':['후랑크','소세지'],'소세지':['후랑크','소시지'],'비엔나':['후랑크'],
+ '면곤약':['실곤약','면곤약'],'콩기름':['식용유'],'대두유':['식용유'],'참치캔':['참치통조림','참치'],'참치':['참치통조림','참치'],'참치액':['참치액젓'],'파지다시마':['건다시마'],'다시마':['건다시마'],
+ '오이맛풋고추':['아삭이'],'아삭이고추':['아삭이'],'알미트볼':['미트볼'],'돼지갈비':['돈갈비'],'돼지고기전지':['돈불고기','돈전지'],'돼지고기앞다리':['돈불고기'],'돼지고기':['돈불고기'],
+ '간장':['진간장'],'발효유':['프로바이오틱','비피더스'],'요거트':['요플레'],'요구르트':['이오','요구르트'],'단무지':['반달단무지','단무지'],'느타리버섯':['느타리'],'새송이버섯':['새송이'],
+ '팽이버섯':['팽이'],'표고버섯':['표고'],'도라지':['도라지채'],'달걀':['계란'],'쇠고기':['소불고기','쇠고기국거리'],'소고기':['소불고기','쇠고기국거리'],'다진생강':['다진생강','생강'],
+ '고춧가루':['고추가루'],'미향':['미향'],'청경채':['청경채'],'애호박':['애호박']};
+const inspNorm=s=>String(s||'').replace(/^\s*\d{1,2}\/\d{1,2}\s*/,'').replace(/[\s()\[\]·.,&]/g,'').toLowerCase();
+function inspParse(name){
+  let s=' '+String(name||'').replace(/\s+/g,' ')+' ',date='',origin='';
+  const m=s.match(/(\d{2})\.(\d{1,2})\.(\d{1,2})/);
+  if(m){date=`${m[1]}.${String(m[2]).padStart(2,'0')}.${String(m[3]).padStart(2,'0')}`;s=s.replace(m[0],' ');}
+  const toks=s.trim().split(' ').filter(Boolean);
+  if(toks.length>1&&/(산|국산|국내|외국|수입|원양)$/.test(toks[toks.length-1]))origin=toks.pop();
+  return{product:toks.join(' '),date,origin};
+}
+function inspBigrams(s){const o=[];for(let i=0;i<s.length-1;i++)o.push(s.slice(i,i+2));return o;}
+function inspScore(prod,orderName){
+  const a=inspNorm(prod),b=inspNorm(orderName);if(!a||!b)return 0;
+  if(a===b)return 100;
+  const al=INSP_ALIAS[a]||[];if(al.map(inspNorm).includes(b))return 95;
+  if(al.length)return 0;                 // 따로 정해 둔 이름이 있으면 그 이름만 (예: 배추는 통배추로만, 양배추로는 안 감)
+  if(a.length>=2&&b.includes(a))return 82;
+  if(b.length>=2&&a.includes(b))return 80;
+  const A=inspBigrams(a),B=inspBigrams(b);if(!A.length||!B.length)return 0;
+  let n=0;const pool=B.slice();A.forEach(x=>{const k=pool.indexOf(x);if(k>=0){n++;pool.splice(k,1);}});
+  return Math.round(140*n/(A.length+B.length));
+}
+// 발주서를 만들 때 자동으로 들어간 안내(사용: …, 기본 5k …)나 예전에 넣은 검수서 비고는 덮어써도 된다
+const inspAutoNote=n=>!n||/사용:|^기본 |최장 /.test(n)||/^(유통|소비)?\s?\d{2}\.\d{2}\.\d{2}/.test(n)||/^[가-힣.]*(산|국산)$/.test(n.trim());
+function inspStored(){try{return JSON.parse(localStorage.getItem(INSP_KEY)||'{}')||{};}catch(e){return{};}}
+function inspFillSrc(keep){
+  const all=inspStored(),sel=$('#insp_src'),cur=keep||sel.value;
+  const ds=Object.keys(all).sort().reverse();
+  let h='<option value="">검수서 고르기</option>'+ds.map(d=>`<option value="${d}">${d.slice(2).replace(/-/g,'.')} 검수서 (${all[d].names.length}장)</option>`).join('');
+  if(INSP.file)h+=`<option value="file">파일: ${esc(INSP.file.label)} (${INSP.file.names.length}장)</option>`;
+  sel.innerHTML=h;
+  const rd=$('#rd').value;
+  sel.value=(cur&&[...sel.options].some(o=>o.value===cur))?cur:(all[rd]?rd:(ds.find(d=>d<=rd)||ds[0]||''));
+}
+function inspSource(){const v=$('#insp_src').value;if(v==='file'&&INSP.file)return INSP.file;const all=inspStored();return all[v]?{date:v,names:all[v].names,label:v}:null;}
+function inspNote(p,inspDate){
+  const lbl=$('#insp_lbl').value,ymd=inspDate?inspDate.slice(2).replace(/-/g,'.'):'';
+  const isExp=p.date&&p.date!==ymd;
+  if(isExp)return (lbl?lbl+' ':'')+p.date+(p.origin?' / '+p.origin:'');
+  return p.origin||'';
+}
+function inspBuild(){
+  const src=inspSource();INSP.src=src;
+  if(!src){INSP.rows=[];inspRender();return;}
+  const cand=ORD.rows.map((r,i)=>({i,name:r.name})).filter(x=>x.name);
+  INSP.rows=src.names.map(nm=>{
+    const p=inspParse(nm);let best=-1,bs=0;
+    for(const c of cand){const sc=inspScore(p.product,c.name);if(sc>bs){bs=sc;best=c.i;}}
+    return{name:nm,p,target:(bs>=55)?best:-1,dup:'',score:bs,note:inspNote(p,src.date)};
+  });
+  // 같은 발주서 품목에 여러 장이 걸리면 이름이 가장 가까운 한 장만 연결하고, 나머지는 직접 고르게 둔다
+  const win={};INSP.rows.forEach((r,k)=>{if(r.target<0)return;const w=win[r.target];if(w===undefined||INSP.rows[w].score<r.score)win[r.target]=k;});
+  INSP.rows.forEach((r,k)=>{if(r.target>=0&&win[r.target]!==k){r.dup=ORD.rows[r.target].name;r.target=-1;}});
+  inspRender();
+}
+function inspRender(){
+  const box=$('#insp_tbl');
+  if(!INSP.src){box.classList.remove('on');box.innerHTML='';$('#insp_msg').textContent=Object.keys(inspStored()).length?'':'아직 저장된 검수서가 없습니다. 영수증 정리 탭에서 검수서 사진 이름을 읽거나, 검수서 엑셀에서 가져오세요.';return;}
+  INSP.sig=ORD.rows.map(r=>r.name).join('|');
+  const opts=ORD.rows.map((r,i)=>r.name?`<option value="${i}">${esc(r.name)}${r.note&&!inspAutoNote(r.note)?' (비고 있음)':''}</option>`:'').join('');
+  let h='<table><tr><th>검수서 사진 이름</th><th style="width:150px">품명</th><th style="width:70px">날짜</th><th style="width:90px">원산지</th><th style="width:190px">→ 발주서 품목</th><th style="width:200px">비고에 적을 내용</th></tr>';
+  INSP.rows.forEach((r,k)=>{
+    const cls=r.target<0?'nomatch':'';
+    h+=`<tr class="${cls}" data-k="${k}"><td>${esc(r.name)}</td><td>${esc(r.p.product)}</td><td>${esc(r.p.date)}</td><td>${esc(r.p.origin)}</td>`+
+      `<td><select data-t="${k}"><option value="-1">(넣지 않음)</option>${opts}</select>${r.dup?` <span class="small" style="color:#b45309">‘${esc(r.dup)}’에는 다른 사진이 연결됨</span>`:''}</td>`+
+      `<td><input type="text" data-n="${k}" value="${esc(r.note)}" placeholder="(적을 내용 없음)"></td></tr>`;
+  });
+  box.innerHTML=h+'</table>';box.classList.add('on');
+  INSP.rows.forEach((r,k)=>{const s2=box.querySelector(`select[data-t="${k}"]`);if(s2)s2.value=String(r.target);});
+  const n=INSP.rows.filter(r=>r.target>=0).length;
+  $('#insp_msg').textContent=`${INSP.src.label||''} · ${INSP.rows.length}장 중 ${n}장을 발주서 품목에 연결했습니다.`+(INSP.rows.length-n?` 노란 줄 ${INSP.rows.length-n}장은 발주서에서 못 찾았습니다(필요하면 직접 고르세요).`:'');
+}
+$('#insp_tbl').addEventListener('change',e=>{
+  const t=e.target;
+  if(t.dataset.t!==undefined){const r=INSP.rows[+t.dataset.t];r.target=+t.value;r.dup='';t.closest('tr').classList.toggle('nomatch',r.target<0);}
+  if(t.dataset.n!==undefined){INSP.rows[+t.dataset.n].note=t.value.trim();}
+});
+$('#insp_src').onchange=inspBuild;
+$('#insp_lbl').onchange=()=>{if(INSP.src){INSP.rows.forEach(r=>{r.note=inspNote(r.p,INSP.src.date);});inspRender();}};
+$('#insp_filebtn').onclick=()=>$('#insp_file').click();
+$('#insp_file').onchange=async e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  $('#insp_msg').textContent='검수서 엑셀을 읽는 중…';
+  const fdat=new FormData();fdat.append('file',f);
+  try{const r=await fetch('/api/order/inspection-names',{method:'POST',body:fdat});
+    if(!r.ok){let t='';try{t=(await r.json()).detail}catch(_){}throw new Error(t||('오류 '+r.status));}
+    const j=await r.json();INSP.file={date:j.date||'',names:j.names,label:f.name};inspFillSrc('file');inspBuild();}
+  catch(err){$('#insp_msg').textContent='검수서를 읽지 못했습니다: '+err.message;}
+};
+$('#insp_apply').onclick=()=>{
+  if(!INSP.src||!INSP.rows.length){$('#insp_msg').textContent='먼저 검수서를 고르세요.';return;}
+  const over=$('#insp_over').checked,done=new Set();let n=0,skip=0;
+  for(const r of INSP.rows){
+    if(r.target<0||!r.note||!ORD.rows[r.target])continue;
+    if(done.has(r.target))continue;               // 같은 품목은 첫 번째 검수서 줄만
+    const row=ORD.rows[r.target];
+    if(row.note&&!over&&row.note!==r.note&&!inspAutoNote(row.note)){skip++;done.add(r.target);continue;}
+    row.note=r.note;done.add(r.target);n++;
+  }
+  renderOrder();$('#saveo').onclick();
+  $('#insp_msg').textContent=`비고 ${n}칸에 적고 발주서를 저장했습니다.`+(skip?` 직접 적어 둔 비고가 있는 ${skip}칸은 그대로 두었습니다(바꾸려면 ‘이미 적힌 비고도 바꾸기’를 체크).`:'');
+};
+window.addEventListener('storage',e=>{if(e.key===INSP_KEY){inspFillSrc();if(!INSP.src)inspBuild();}});
+try{const ch=new BroadcastChannel('sikmate-inspection');ch.onmessage=()=>{inspFillSrc();if(!INSP.src||INSP.src.date===$('#insp_src').value)inspBuild();};}catch(e){}
+function inspRefresh(){inspFillSrc();if(!INSP.src||INSP.sig!==ORD.rows.map(r=>r.name).join('|'))inspBuild();}
 // ---------- init
 (function(){
   const today=new Date();
   $('#ws').value=fd(mondayOf(today));
   $('#od').value=fd(today);setDefaultsOrder();
   renderMenu();buildOrder();
+  try{inspFillSrc();inspBuild();}catch(e){}
   if(window.top!==window){const h=document.querySelector('.top h1');if(h)h.style.display='none';}
   syncInit();
 })();

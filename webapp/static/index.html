@@ -736,6 +736,28 @@ $('#newUpload').onclick = () => {
     refreshButtons();
     const turned = list.filter(x => x.rot).length;
     if (!busy && !reading) $('#inspMsg').textContent = list.length ? `사진 ${list.length}장 · ${Math.ceil(list.length / 3)}줄` + (turned ? ` · 돌린 사진 ${turned}장` : '') : '';
+    shareInsp();
+  }
+  // 검수서 사진 이름을 검수 날짜별로 이 브라우저에 남긴다 → 발주서 탭의 '검수서 → 비고 채우기'가 읽는다
+  let shareTimer = null;
+  function shareInsp(){
+    clearTimeout(shareTimer);
+    shareTimer = setTimeout(() => {
+      try {
+        const d = ($('#inspDate') && $('#inspDate').value) || '';
+        if (!d || typeof localStorage === 'undefined') return;
+        const names = list.filter(x => x.read === 'done' || x.edited).map(x => String(x.name || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+        if (!names.length) return;
+        const KEY = 'sikmateInspections';
+        let all = {};
+        try { all = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { all = {}; }
+        all[d] = {names, t: Date.now()};
+        const keys = Object.keys(all).sort((a, b) => (all[b].t || 0) - (all[a].t || 0));
+        keys.slice(40).forEach(k => { delete all[k]; });
+        localStorage.setItem(KEY, JSON.stringify(all));
+        if (typeof BroadcastChannel === 'function') { const ch = new BroadcastChannel('sikmate-inspection'); ch.postMessage({type: 'changed', date: d}); ch.close(); }
+      } catch (e) { /* 저장 공간을 못 쓰면 연결만 빠진다 */ }
+    }, 400);
   }
 
   // ---- 이름 자동 붙이기: 사진을 읽어 '품명 날짜 원산지' ----
@@ -825,7 +847,7 @@ $('#newUpload').onclick = () => {
   $('#inspThumbs').addEventListener('input', e => {
     const t = e.target.closest('textarea.nm'); if (!t) return;
     const x = list[Number(t.dataset.n)];
-    if (x) { x.name = t.value.replace(/\s+/g, ' '); x.edited = true; }
+    if (x) { x.name = t.value.replace(/\s+/g, ' '); x.edited = true; shareInsp(); }
   });
   // 이름 칸에서 Enter 는 줄바꿈 대신 입력 끝
   $('#inspThumbs').addEventListener('keydown', e => {
