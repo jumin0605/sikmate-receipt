@@ -35,7 +35,7 @@ class AccountStoreTests(unittest.TestCase):
         self.assertFalse(self.store.create("b2", "password2")[1])
 
     def test_username_rules_and_duplicates(self):
-        for bad in ("", "a", "a b", "x" * 21, "a/b", "../x"):
+        for bad in ("", "a", "a b", "x" * 61, "a/b", "../x", "a@b c"):
             with self.assertRaises(AccountError):
                 self.store.create(bad, "password1")
         self.store.create("Kim", "password1")
@@ -43,6 +43,11 @@ class AccountStoreTests(unittest.TestCase):
             self.store.create("kim", "password1")       # 대소문자만 다른 같은 아이디
         with self.assertRaises(AccountError):
             self.store.create("park", "12345")          # 비밀번호가 너무 짧음
+
+    def test_email_address_as_username(self):
+        rec, _ = self.store.create("Jumin0605.adsens2025@gmail.com", "password1")
+        self.assertIsNotNone(self.store.verify("jumin0605.adsens2025@GMAIL.com", "password1"))
+        self.assertEqual(self.store.read_token(self.store.make_token(rec)), "jumin0605.adsens2025@gmail.com")
 
     def test_korean_username_and_display_name_default(self):
         rec, _ = self.store.create("손성임", "password1")

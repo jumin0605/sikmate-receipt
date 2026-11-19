@@ -19,7 +19,7 @@ import threading
 import time
 from pathlib import Path
 
-USERNAME_RE = re.compile(r"^[0-9A-Za-z가-힣_.\-]{2,20}$")
+USERNAME_RE = re.compile(r"^[0-9A-Za-z가-힣_.\-@+]{2,60}$")
 MIN_PASSWORD = 6
 MAX_PASSWORD = 100
 PBKDF2_ROUNDS = 200_000
@@ -62,7 +62,7 @@ _DUMMY_HASH = hash_password("dummy-password-for-timing", 1000)
 def clean_username(raw: str) -> str:
     name = (raw or "").strip()
     if not USERNAME_RE.fullmatch(name):
-        raise AccountError("아이디는 2~20자의 한글·영문·숫자와 _ . - 만 쓸 수 있습니다.")
+        raise AccountError("아이디는 2~60자의 한글·영문·숫자와 _ . - @ + 만 쓸 수 있습니다. 공백은 쓸 수 없습니다. (이메일 주소도 아이디로 쓸 수 있습니다)")
     return name
 
 

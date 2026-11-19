@@ -526,7 +526,7 @@ a.back{display:block;text-align:center;margin-top:16px;color:#64748b;font-size:1
 <form method=post action=/login id=f-login><input name=username placeholder="아이디" value="@@USER@@" autocomplete=username required @@AF1@@>
 <input type=password name=password placeholder="비밀번호" autocomplete=current-password required>
 <input type=hidden name=next value="@@NEXT@@"><button class=go>로그인</button></form>
-<form method=post action=/signup id=f-signup hidden><input name=username placeholder="아이디 (2~20자, 한글·영문·숫자)" value="@@USER@@" autocomplete=username required @@AF2@@>
+<form method=post action=/signup id=f-signup hidden><input name=username placeholder="아이디 (이메일 주소도 가능)" value="@@USER@@" autocomplete=username required @@AF2@@>
 <input name=name placeholder="표시 이름 (선택, 예: 홍길동 영양사)" value="@@NAME@@" maxlength=20>
 <input type=password name=password placeholder="비밀번호 (6자 이상)" autocomplete=new-password required>
 <input type=password name=password2 placeholder="비밀번호 한 번 더" autocomplete=new-password required>
