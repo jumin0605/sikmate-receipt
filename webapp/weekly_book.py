@@ -11,6 +11,7 @@ weekly_template.xlsm 을 바탕으로
 from __future__ import annotations
 
 import io
+import contextvars
 import re
 import zipfile
 from datetime import date, datetime, timedelta
@@ -27,6 +28,13 @@ TEMPLATE = HERE / "weekly_template.xlsm"
 TEMPLATE_MENU_SHEET = "11월 식단표"
 # 사용자가 올린 엑셀을 양식으로 쓰기로 하면 여기에 저장된다 (app.py 가 영구 디스크 경로로 정해 준다)
 CUSTOM_TEMPLATE: Path | None = None
+# 로그인한 사용자별 양식: 요청마다 use_template() 로 그 사용자의 양식 경로를 정해 둔다 (요청끼리 섞이지 않는다)
+_USER_TEMPLATE: contextvars.ContextVar = contextvars.ContextVar("weekly_user_template", default=None)
+
+
+def use_template(path) -> None:
+    """지금 요청에서 쓸 사용자 양식 경로를 정한다 (None 이면 기본 양식)."""
+    _USER_TEMPLATE.set(Path(path) if path else None)
 REQUIRED_SHEETS = ["설정", "메뉴DB", "주간식단표(사진)", "보존식 기록지(사진)"]
 
 
@@ -65,8 +73,9 @@ def output_name(monday: date) -> str:
 
 
 def active_template() -> Path:
-    if CUSTOM_TEMPLATE is not None and Path(CUSTOM_TEMPLATE).is_file():
-        return Path(CUSTOM_TEMPLATE)
+    cand = _USER_TEMPLATE.get() or CUSTOM_TEMPLATE
+    if cand is not None and Path(cand).is_file():
+        return Path(cand)
     return TEMPLATE
 
 

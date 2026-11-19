@@ -6,7 +6,8 @@
 
 환경변수
   GEMINI_API_KEY    (필수) 결제 계정이 연결된 프로젝트의 키를 쓸 것
-  APP_ACCESS_CODE   (권장) 파일럿 참여자에게만 알려 주는 접속 코드. 비우면 누구나 접속
+  APP_ACCESS_CODE   (권장) 회원가입 코드. 파일럿 참여자에게만 알려 준다. 비우면 누구나 가입할 수 있다 (로그인은 항상 필요)
+  APP_SESSION_SALT  (선택) 로그인 서명 키. 비우면 저장 폴더의 session.key 를 쓴다
   DATA_DIR          작업 파일 저장 위치 (기본 ./data)
   RETENTION_DAYS    작업 파일 보관 일수 (기본 7)
   MAX_FILES         한 번에 올릴 수 있는 파일 수 (기본 40)
@@ -42,6 +43,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
+from accounts import AccountError, AccountStore, LoginThrottle
 from env_config import load_project_env
 from inspection import (INSP_ALLOWED_EXT, build_inspection, detect_rotation, inspection_date_stamp,
                         norm_rotation, photos_zip, read_label)
@@ -105,16 +107,42 @@ def load_core():
 core = load_core()
 
 app = FastAPI(title="영양사 영수증 정리")
-_token_salt = os.environ.get("APP_SESSION_SALT", "receipt-web")
+
+# ---------------------------------------------------------------------------
+# 개별 로그인: 계정마다 식단표·발주서 기록, 주간 서류 설정·양식, 영수증 작업을 따로 둔다.
+# 계정 목록과 사용자별 폴더는 MENU_STORE_DIR (영구 디스크를 지정하면 재배포 뒤에도 남는다) 아래에 둔다.
+# ---------------------------------------------------------------------------
+MENU_STORE_PERSISTENT = bool(os.environ.get("MENU_STORE_DIR", "").strip())
+MENU_STORE_DIR = Path(os.environ.get("MENU_STORE_DIR", "").strip() or (DATA_DIR / "menu_store")).resolve()
+ACCOUNTS = AccountStore(MENU_STORE_DIR, os.environ.get("APP_SESSION_SALT", ""))
+THROTTLE = LoginThrottle(max_fails=6)            # 같은 곳에서 같은 아이디로 6번 틀리면 10분 막음
+THROTTLE_IP = LoginThrottle(max_fails=20)        # 같은 곳에서 20번 틀리면 10분 막음
+THROTTLE_SIGNUP = LoginThrottle(max_fails=8)     # 가입 코드 무작위 대입 방지
 
 
-def _token() -> str:
-    return hashlib.sha256((ACCESS_CODE + _token_salt).encode()).hexdigest()
+def _check_auth(token: str | None) -> str:
+    """로그인한 사용자의 아이디(소문자)를 돌려준다. 로그인하지 않았으면 401."""
+    user = ACCOUNTS.read_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+    return user
 
 
-def _check_auth(token: str | None):
-    if ACCESS_CODE and token != _token():
-        raise HTTPException(status_code=401, detail="접속 코드가 필요합니다.")
+def _udir(user: str) -> Path:
+    """사용자별 저장 폴더"""
+    d = ACCOUNTS.user_dir(ACCOUNTS.get(user))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _job_guard(job_id: str, user: str):
+    """다른 사람이 올린 영수증 작업은 열 수 없게 한다 (주인이 적히지 않은 예전 작업은 로그인한 누구나 열 수 있다)."""
+    try:
+        owner = json.loads((JOBS_DIR / job_id / "status.json").read_text(encoding="utf-8")).get("owner")
+    except Exception:  # noqa: BLE001
+        return
+    if owner and owner != user:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
 
 
 # ---------------------------------------------------------------------------
@@ -475,14 +503,92 @@ threading.Thread(target=_purge_loop, daemon=True).start()
 # ---------------------------------------------------------------------------
 # 화면 / API
 # ---------------------------------------------------------------------------
-LOGIN_HTML = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>접속 코드 | 식담온 영수증 정리</title><style>body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f0fdfa}
-form{background:#fff;padding:32px;border-radius:16px;box-shadow:0 6px 24px #0f172a14;width:min(340px,92vw);box-sizing:border-box}
-h3{margin:0 0 6px;color:#115e59}
-input,button{width:100%;padding:13px;font-size:16px;margin-top:12px;box-sizing:border-box}input{border:1px solid #cbd5e1;border-radius:10px}button{background:#0f766e;color:#fff;border:0;border-radius:10px;font-weight:700;cursor:pointer}
-button:hover{background:#115e59}p{color:#b91c1c;margin:10px 0 0}a{display:block;text-align:center;margin-top:16px;color:#64748b;font-size:14px;text-decoration:none}</style><form method=post action=/login><h3>식담온 영수증 정리</h3>
-<div>안내받은 접속 코드를 입력해 주세요.</div><input type=password name=code autofocus>
-<button>들어가기</button>{msg}<a href="/">← 소개 페이지로</a></form>"""
+def _esc(s) -> str:
+    import html as _html
+    return _html.escape(str(s or ""), quote=True)
+
+
+SAFE_NEXT = ("/app", "/menu", "/photo")
+
+LOGIN_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>로그인 | 식단온</title><style>
+body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f0fdfa}
+.box{background:#fff;padding:28px 32px 24px;border-radius:16px;box-shadow:0 6px 24px #0f172a14;width:min(360px,92vw);box-sizing:border-box}
+h3{margin:0 0 4px;color:#115e59;font-size:22px}.sub{color:#64748b;font-size:13.5px;margin-bottom:14px}
+.tabs{display:flex;gap:6px;margin:6px 0 4px}.tabs button{flex:1;padding:10px 0;margin:0;background:#f1f5f9;color:#475569;border:0;border-radius:10px;font-weight:700;cursor:pointer;font-size:14.5px}
+.tabs button.on{background:#0f766e;color:#fff}
+input,button.go{width:100%;padding:13px;font-size:16px;margin-top:10px;box-sizing:border-box}input{border:1px solid #cbd5e1;border-radius:10px}
+button.go{background:#0f766e;color:#fff;border:0;border-radius:10px;font-weight:700;cursor:pointer;margin-top:14px}button.go:hover{background:#115e59}
+p.err{color:#b91c1c;margin:12px 0 0;font-size:14px}p.hint{color:#64748b;font-size:12.5px;margin:8px 0 0;line-height:1.5}
+a.back{display:block;text-align:center;margin-top:16px;color:#64748b;font-size:14px;text-decoration:none}[hidden]{display:none!important}
+</style><div class=box><h3>식단온</h3><div class=sub>내 계정으로 로그인하면 내 식단표·발주서·설정이 따로 저장됩니다.</div>
+<div class=tabs><button type=button data-t=login>로그인</button><button type=button data-t=signup>처음이에요 (가입)</button></div>
+<form method=post action=/login id=f-login><input name=username placeholder="아이디" value="@@USER@@" autocomplete=username required @@AF1@@>
+<input type=password name=password placeholder="비밀번호" autocomplete=current-password required>
+<input type=hidden name=next value="@@NEXT@@"><button class=go>로그인</button></form>
+<form method=post action=/signup id=f-signup hidden><input name=username placeholder="아이디 (2~20자, 한글·영문·숫자)" value="@@USER@@" autocomplete=username required @@AF2@@>
+<input name=name placeholder="표시 이름 (선택, 예: 홍길동 영양사)" value="@@NAME@@" maxlength=20>
+<input type=password name=password placeholder="비밀번호 (6자 이상)" autocomplete=new-password required>
+<input type=password name=password2 placeholder="비밀번호 한 번 더" autocomplete=new-password required>
+@@CODEFIELD@@<input type=hidden name=next value="@@NEXT@@"><button class=go>가입하고 시작하기</button>
+<p class=hint>비밀번호는 암호화해서 저장하며, 관리자도 볼 수 없습니다. 꼭 기억해 두세요. 잊어버렸을 때는 담당자에게 알려 주세요.</p></form>
+@@MSG@@<a class=back href="/">← 소개 페이지로</a></div>
+<script>(function(){var t='@@TAB@@';function show(k){document.getElementById('f-login').hidden=k!=='login';document.getElementById('f-signup').hidden=k!=='signup';
+document.querySelectorAll('.tabs button').forEach(function(b){b.classList.toggle('on',b.dataset.t===k)})}
+document.querySelectorAll('.tabs button').forEach(function(b){b.onclick=function(){show(b.dataset.t)}});show(t)})();</script>"""
+
+
+def _login_page(next_: str = "/app", msg: str = "", tab: str = "login", status: int = 200,
+                username: str = "", name: str = "") -> HTMLResponse:
+    code_field = ('<input type=password name=code placeholder="가입 코드 (안내받은 코드)" required>'
+                  if ACCESS_CODE else "")
+    html = (LOGIN_PAGE.replace("@@NEXT@@", _esc(next_ if next_ in SAFE_NEXT else "/app"))
+            .replace("@@USER@@", _esc(username)).replace("@@NAME@@", _esc(name))
+            .replace("@@AF1@@", "autofocus" if tab == "login" else "").replace("@@AF2@@", "autofocus" if tab == "signup" else "")
+            .replace("@@CODEFIELD@@", code_field).replace("@@TAB@@", "signup" if tab == "signup" else "login")
+            .replace("@@MSG@@", f'<p class=err>{_esc(msg)}</p>' if msg else ""))
+    return HTMLResponse(html, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+def _client_ip(request: Request) -> str:
+    # Render 같은 프록시는 접속자 주소를 X-Forwarded-For 맨 뒤에 붙인다 (앞쪽은 접속자가 꾸며 보낼 수 있다)
+    xf = request.headers.get("x-forwarded-for", "")
+    if xf:
+        return xf.split(",")[-1].strip() or "?"
+    return request.client.host if request.client else "?"
+
+
+def _set_login(resp, rec: dict, request: Request):
+    from urllib.parse import quote
+    secure = request.headers.get("x-forwarded-proto", "").startswith("https") or request.url.scheme == "https"
+    age = 30 * 86400
+    resp.set_cookie("rc_auth", ACCOUNTS.make_token(rec), max_age=age, httponly=True, samesite="lax", secure=secure)
+    # 아래 두 개는 화면에 이름을 보이고, 같은 브라우저에서 다른 사람이 로그인했는지 알아보는 용도 (민감하지 않은 값)
+    resp.set_cookie("sm_uid", rec["id"], max_age=age, samesite="lax", secure=secure)
+    resp.set_cookie("sm_name", quote(rec["name"]), max_age=age, samesite="lax", secure=secure)
+    return resp
+
+
+def _init_user_data(rec: dict, first: bool):
+    d = ACCOUNTS.user_dir(rec)
+    d.mkdir(parents=True, exist_ok=True)
+    if first:
+        # 계정 기능이 생기기 전에 쓰던 기록(식단표·발주서, 주간 서류 설정·양식)은 맨 처음 가입한 계정이 이어받는다.
+        # 예전 파일은 지우지 않고 복사만 한다.
+        for fname in LEGACY_FILES:
+            src = MENU_STORE_DIR / fname
+            if src.is_file() and not (d / fname).exists():
+                shutil.copyfile(src, d / fname)
+        if (d / "menu_state.json").is_file():
+            return
+    # 새 계정은 시설·업체 이름을 비운 채 시작한다 (설정 탭에서 본인 것으로 채운다)
+    seed = {"rev": 1, "saved_at": time.time(),
+            "data": {"settings": {"facility": "", "dietitian": rec["name"], "meatVendor": "", "martVendor": ""},
+                     "settingsT": int(time.time() * 1000)}}
+    (d / "menu_state.json").write_text(json.dumps(seed, ensure_ascii=False), encoding="utf-8")
+
+
+LEGACY_FILES = ("menu_state.json", "weekly_book.json", "weekly_template_custom.xlsm")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -496,11 +602,16 @@ def privacy():
     return FileResponse(HERE / "static" / "privacy.html")
 
 
+@app.get("/login", response_class=HTMLResponse)
+def login_page(next: str = "/app", tab: str = "login"):
+    return _login_page(next, tab="signup" if tab == "signup" else "login")
+
+
 @app.get("/app", response_class=HTMLResponse)
 def index(rc_auth: str | None = Cookie(default=None)):
-    """실제 도구. 접속 코드가 설정돼 있으면 코드 확인 후에만 열린다."""
-    if ACCESS_CODE and rc_auth != _token():
-        return HTMLResponse(LOGIN_HTML.replace("{msg}", ""))
+    """실제 도구. 로그인한 사람만 열린다."""
+    if not ACCOUNTS.read_token(rc_auth):
+        return _login_page("/app")
     # 영수증 정리 · 신태양 식단표/발주서 · 식단 사진을 탭으로 오가는 화면 (각 도구는 아래 경로에서 불러온다)
     return FileResponse(HERE / "static" / "shell.html", headers={"Cache-Control": "no-cache"})
 
@@ -508,39 +619,127 @@ def index(rc_auth: str | None = Cookie(default=None)):
 @app.get("/app/receipt", response_class=HTMLResponse)
 def receipt_page(rc_auth: str | None = Cookie(default=None)):
     """영수증 정리 도구 본체 (/app 화면의 탭 안에서 열린다)."""
-    if ACCESS_CODE and rc_auth != _token():
-        return HTMLResponse(LOGIN_HTML.replace("{msg}", ""))
+    if not ACCOUNTS.read_token(rc_auth):
+        return _login_page("/app")
     # 업데이트 뒤에도 예전 화면이 브라우저에 남아 새 기능이 안 보이는 일을 막는다 (매번 변경 여부만 확인)
     return FileResponse(HERE / "static" / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/menu", response_class=HTMLResponse)
 def menu_page(rc_auth: str | None = Cookie(default=None)):
-    """식단표·발주서 생성기. 접속 코드가 설정돼 있으면 코드 확인 후에만 열린다."""
-    if ACCESS_CODE and rc_auth != _token():
-        return HTMLResponse(LOGIN_HTML.replace("{msg}", "").replace("<button>", '<input type=hidden name=next value="/menu"><button>'))
+    """식단표·발주서 생성기. 로그인한 사람만 열린다."""
+    if not ACCOUNTS.read_token(rc_auth):
+        return _login_page("/menu")
     return FileResponse(HERE / "static" / "menu.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/photo", response_class=HTMLResponse)
 def photo_page(rc_auth: str | None = Cookie(default=None)):
     """식단 사진 정리 (원근·기울기·회전·용량 맞추기·날짜 이름). 사진은 브라우저 안에서만 처리한다."""
-    if ACCESS_CODE and rc_auth != _token():
-        return HTMLResponse(LOGIN_HTML.replace("{msg}", "").replace("<button>", '<input type=hidden name=next value="/photo"><button>'))
+    if not ACCOUNTS.read_token(rc_auth):
+        return _login_page("/photo")
     return FileResponse(HERE / "static" / "photo.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/login")
-def login(code: str = Form(...), next: str = Form("/app")):
-    dest = next if next in ("/menu", "/photo") else "/app"
-    if ACCESS_CODE and not secrets.compare_digest(code.strip(), ACCESS_CODE):
-        page = LOGIN_HTML.replace("{msg}", "<p>코드가 맞지 않습니다.</p>")
-        if dest != "/app":
-            page = page.replace("<button>", f'<input type=hidden name=next value="{dest}"><button>')
-        return HTMLResponse(page, status_code=401)
-    r = RedirectResponse(dest, status_code=303)
-    r.set_cookie("rc_auth", _token(), max_age=30 * 86400, httponly=True, samesite="lax")
+def login(request: Request, username: str = Form(""), password: str = Form(""), next: str = Form("/app")):
+    dest = next if next in SAFE_NEXT else "/app"
+    ip, pair = _client_ip(request), f"{_client_ip(request)}|{username.strip().lower()}"
+    left = max(THROTTLE_IP.blocked(ip), THROTTLE.blocked(pair))
+    if left:
+        return _login_page(dest, f"시도가 너무 많습니다. {left // 60 + 1}분 뒤에 다시 해 주세요.", status=429, username=username)
+    rec = ACCOUNTS.verify(username, password)
+    if rec is None:
+        THROTTLE_IP.fail(ip)
+        THROTTLE.fail(pair)
+        return _login_page(dest, "아이디 또는 비밀번호가 맞지 않습니다.", status=401, username=username)
+    THROTTLE.ok(pair)
+    return _set_login(RedirectResponse(dest, status_code=303), rec, request)
+
+
+@app.post("/signup")
+def signup(request: Request, username: str = Form(""), password: str = Form(""), password2: str = Form(""),
+           name: str = Form(""), code: str = Form(""), next: str = Form("/app")):
+    dest = next if next in SAFE_NEXT else "/app"
+    ip = _client_ip(request)
+    left = THROTTLE_SIGNUP.blocked(ip)
+    if left:
+        return _login_page(dest, f"시도가 너무 많습니다. {left // 60 + 1}분 뒤에 다시 해 주세요.", "signup", 429, username, name)
+    if ACCESS_CODE and not secrets.compare_digest(code.strip().encode("utf-8"), ACCESS_CODE.encode("utf-8")):
+        THROTTLE_SIGNUP.fail(ip)
+        return _login_page(dest, "가입 코드가 맞지 않습니다.", "signup", 401, username, name)
+    if password != password2:
+        return _login_page(dest, "비밀번호 두 칸이 서로 다릅니다.", "signup", 400, username, name)
+    try:
+        rec, first = ACCOUNTS.create(username, password, name)
+    except AccountError as e:
+        return _login_page(dest, str(e), "signup", 400, username, name)
+    _init_user_data(rec, first)
+    return _set_login(RedirectResponse(dest, status_code=303), rec, request)
+
+
+@app.post("/logout")
+def logout():
+    r = RedirectResponse("/login", status_code=303)
+    for c in ("rc_auth", "sm_uid", "sm_name"):
+        r.delete_cookie(c)
     return r
+
+
+ACCOUNT_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>내 계정 | 식단온</title><style>body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f0fdfa}
+.box{background:#fff;padding:28px 32px;border-radius:16px;box-shadow:0 6px 24px #0f172a14;width:min(380px,92vw);box-sizing:border-box}
+h3{margin:0 0 4px;color:#115e59}.who{color:#475569;margin-bottom:12px}h4{margin:18px 0 0;color:#0f172a;font-size:15px}
+input,button{width:100%;padding:12px;font-size:15px;margin-top:10px;box-sizing:border-box}input{border:1px solid #cbd5e1;border-radius:10px}
+button{background:#0f766e;color:#fff;border:0;border-radius:10px;font-weight:700;cursor:pointer}button.out{background:#e2e8f0;color:#334155}
+.ok{color:#0f766e}.err{color:#b91c1c}a{display:block;text-align:center;margin-top:14px;color:#64748b;font-size:14px;text-decoration:none}</style>
+<div class=box><h3>내 계정</h3><div class=who>@@WHO@@</div>@@MSG@@
+<h4>비밀번호 바꾸기</h4><form method=post action=/account/password><input type=password name=old placeholder="지금 비밀번호" autocomplete=current-password required>
+<input type=password name=new placeholder="새 비밀번호 (6자 이상)" autocomplete=new-password required>
+<input type=password name=new2 placeholder="새 비밀번호 한 번 더" autocomplete=new-password required><button>바꾸기</button></form>
+<form method=post action=/logout><button class=out>로그아웃</button></form><a href="/app" target=_top>← 돌아가기</a></div>"""
+
+
+def _account_page(rec: dict, msg: str = "", ok: bool = False, status: int = 200) -> HTMLResponse:
+    m = f'<p class="{"ok" if ok else "err"}">{_esc(msg)}</p>' if msg else ""
+    html = ACCOUNT_PAGE.replace("@@WHO@@", _esc(f"{rec['name']} ({rec['username']})")).replace("@@MSG@@", m)
+    return HTMLResponse(html, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/account", response_class=HTMLResponse)
+def account_page(rc_auth: str | None = Cookie(default=None)):
+    user = ACCOUNTS.read_token(rc_auth)
+    if not user:
+        return _login_page("/app")
+    return _account_page(ACCOUNTS.get(user))
+
+
+@app.post("/account/password")
+def account_password(request: Request, old: str = Form(""), new: str = Form(""), new2: str = Form(""),
+                     rc_auth: str | None = Cookie(default=None)):
+    user = ACCOUNTS.read_token(rc_auth)
+    if not user:
+        return _login_page("/app")
+    rec = ACCOUNTS.get(user)
+    ip = _client_ip(request)
+    left = THROTTLE.blocked(f"{ip}|pw|{user}")
+    if left:
+        return _account_page(rec, f"시도가 너무 많습니다. {left // 60 + 1}분 뒤에 다시 해 주세요.", status=429)
+    if new != new2:
+        return _account_page(rec, "새 비밀번호 두 칸이 서로 다릅니다.", status=400)
+    try:
+        rec = ACCOUNTS.change_password(user, old, new)
+    except AccountError as e:
+        THROTTLE.fail(f"{ip}|pw|{user}")
+        return _account_page(rec, str(e), status=400)
+    resp = _account_page(rec, "비밀번호를 바꿨습니다. 다른 곳에서 로그인해 둔 기기는 로그아웃됩니다.", ok=True)
+    return _set_login(resp, rec, request)
+
+
+@app.get("/api/me")
+def api_me(rc_auth: str | None = Cookie(default=None)):
+    rec = ACCOUNTS.get(_check_auth(rc_auth))
+    return JSONResponse({"username": rec["username"], "name": rec["name"]}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/healthz")
@@ -552,18 +751,16 @@ def healthz():
 # 신태양 식단표·발주서 생성기: 작업 내용을 서버에 저장해 PC가 바뀌어도 이어서 쓴다
 # MENU_STORE_DIR 에 영구 디스크 경로를 지정하면 재배포 뒤에도 남는다 (없으면 DATA_DIR/menu_store, 재배포 때 초기화될 수 있음)
 # ---------------------------------------------------------------------------
-MENU_STORE_PERSISTENT = bool(os.environ.get("MENU_STORE_DIR", "").strip())
-MENU_STORE_DIR = Path(os.environ.get("MENU_STORE_DIR", "").strip() or (DATA_DIR / "menu_store")).resolve()
 MENU_STATE_MAX_BYTES = 4_000_000
 _menu_lock = threading.Lock()
 
 
-def _menu_state_path() -> Path:
-    return MENU_STORE_DIR / "menu_state.json"
+def _menu_state_path(user: str) -> Path:
+    return _udir(user) / "menu_state.json"
 
 
-def _menu_state_read() -> dict:
-    p = _menu_state_path()
+def _menu_state_read(user: str) -> dict:
+    p = _menu_state_path(user)
     if p.is_file():
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
@@ -581,25 +778,24 @@ class MenuStateIn(BaseModel):
 
 @app.get("/api/menu/state")
 def menu_state_get(rc_auth: str | None = Cookie(default=None)):
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
     with _menu_lock:
-        cur = _menu_state_read()
+        cur = _menu_state_read(user)
     return JSONResponse({**cur, "persistent": MENU_STORE_PERSISTENT}, headers={"Cache-Control": "no-store"})
 
 
 @app.put("/api/menu/state")
 def menu_state_put(body: MenuStateIn, rc_auth: str | None = Cookie(default=None)):
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
     raw = json.dumps(body.data, ensure_ascii=False)
     if len(raw.encode("utf-8")) > MENU_STATE_MAX_BYTES:
         raise HTTPException(413, "저장할 내용이 너무 큽니다.")
     with _menu_lock:
-        cur = _menu_state_read()
+        cur = _menu_state_read(user)
         if body.base_rev != cur["rev"]:
             return JSONResponse({**cur, "persistent": MENU_STORE_PERSISTENT}, status_code=409)
         new = {"rev": cur["rev"] + 1, "saved_at": time.time(), "data": body.data}
-        MENU_STORE_DIR.mkdir(parents=True, exist_ok=True)
-        p = _menu_state_path()
+        p = _menu_state_path(user)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(new, ensure_ascii=False), encoding="utf-8")
         if p.is_file():
@@ -617,15 +813,18 @@ import weekly_book  # noqa: E402
 WEEKLY_MAX_PHOTOS = 28
 WEEKLY_MAX_PHOTO_MB = 8
 WEEKLY_MAX_IMPORT_MB = 40
-weekly_book.CUSTOM_TEMPLATE = MENU_STORE_DIR / "weekly_template_custom.xlsm"
 
 
-def _weekly_store_path() -> Path:
-    return MENU_STORE_DIR / "weekly_book.json"
+def _weekly_template_path(user: str) -> Path:
+    return _udir(user) / "weekly_template_custom.xlsm"
 
 
-def _weekly_store_read() -> dict:
-    p = _weekly_store_path()
+def _weekly_store_path(user: str) -> Path:
+    return _udir(user) / "weekly_book.json"
+
+
+def _weekly_store_read(user: str) -> dict:
+    p = _weekly_store_path(user)
     if p.is_file():
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
@@ -638,9 +837,8 @@ def _weekly_store_read() -> dict:
     return {"menus": {}, "settings": {}}
 
 
-def _weekly_store_write(d: dict):
-    MENU_STORE_DIR.mkdir(parents=True, exist_ok=True)
-    p = _weekly_store_path()
+def _weekly_store_write(user: str, d: dict):
+    p = _weekly_store_path(user)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
     if p.is_file():
@@ -660,9 +858,10 @@ class WeeklySettingsIn(BaseModel):
 
 @app.get("/api/weekly/menudb")
 def weekly_menudb(rc_auth: str | None = Cookie(default=None)):
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
+    weekly_book.use_template(_weekly_template_path(user))
     with _menu_lock:
-        st = _weekly_store_read()
+        st = _weekly_store_read(user)
     return JSONResponse({"cols": weekly_book.DB_COLS, "base": weekly_book.template_menudb(), "extra": st["menus"],
                          "settings": st["settings"], "persistent": MENU_STORE_PERSISTENT,
                          "template": st.get("template") if weekly_book.active_template() != weekly_book.TEMPLATE else None,
@@ -672,32 +871,32 @@ def weekly_menudb(rc_auth: str | None = Cookie(default=None)):
 
 @app.put("/api/weekly/menudb")
 def weekly_menudb_put(body: WeeklyMenuIn, rc_auth: str | None = Cookie(default=None)):
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
     name = re.sub(r"\s+", " ", body.name or "").strip()[:60]
     if not name:
         raise HTTPException(400, "메뉴 이름이 비었습니다.")
     vals = [re.sub(r"\s+", " ", str(v or "")).strip()[:60] for v in (body.values or [])][:11]
     vals += [""] * (11 - len(vals))
     with _menu_lock:
-        st = _weekly_store_read()
+        st = _weekly_store_read(user)
         if body.delete:
             st["menus"].pop(name, None)
         else:
             if len(st["menus"]) >= 2000 and name not in st["menus"]:
                 raise HTTPException(413, "메뉴가 너무 많습니다.")
             st["menus"][name] = vals
-        _weekly_store_write(st)
+        _weekly_store_write(user, st)
     return {"ok": True, "count": len(st["menus"])}
 
 
 @app.put("/api/weekly/settings")
 def weekly_settings_put(body: WeeklySettingsIn, rc_auth: str | None = Cookie(default=None)):
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
     keep = {k: str(v)[:40] for k, v in (body.settings or {}).items() if k in weekly_book.SETTING_CELLS}
     with _menu_lock:
-        st = _weekly_store_read()
+        st = _weekly_store_read(user)
         st["settings"] = keep
-        _weekly_store_write(st)
+        _weekly_store_write(user, st)
     return {"ok": True}
 
 
@@ -733,34 +932,33 @@ async def weekly_import(request: Request, rc_auth: str | None = Cookie(default=N
 @app.post("/api/weekly/template")
 async def weekly_template_set(request: Request, rc_auth: str | None = Cookie(default=None)):
     """올린 엑셀을 앞으로 내려받을 주간 엑셀의 양식으로 쓴다."""
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
     b, name, _ = await _read_upload(request)
     try:
         tpl = weekly_book.make_template(b)
     except ValueError as e:
         raise HTTPException(400, str(e))
     with _menu_lock:
-        MENU_STORE_DIR.mkdir(parents=True, exist_ok=True)
-        p = Path(weekly_book.CUSTOM_TEMPLATE)
+        p = _weekly_template_path(user)
         tmp = p.with_suffix(".tmp")
         tmp.write_bytes(tpl)
         os.replace(tmp, p)
-        st = _weekly_store_read()
+        st = _weekly_store_read(user)
         st["template"] = {"name": name, "saved_at": time.time()}
-        _weekly_store_write(st)
+        _weekly_store_write(user, st)
     return {"ok": True, "template": st["template"]}
 
 
 @app.delete("/api/weekly/template")
 def weekly_template_reset(rc_auth: str | None = Cookie(default=None)):
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
     with _menu_lock:
-        p = Path(weekly_book.CUSTOM_TEMPLATE)
+        p = _weekly_template_path(user)
         if p.is_file():
             p.unlink()
-        st = _weekly_store_read()
+        st = _weekly_store_read(user)
         st.pop("template", None)
-        _weekly_store_write(st)
+        _weekly_store_write(user, st)
     return {"ok": True}
 
 
@@ -777,7 +975,8 @@ async def order_inspection_names(request: Request, rc_auth: str | None = Cookie(
 
 @app.post("/api/weekly/xlsm")
 async def weekly_xlsm(request: Request, rc_auth: str | None = Cookie(default=None)):
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
+    weekly_book.use_template(_weekly_template_path(user))
     form = await request.form()
     try:
         data = json.loads(form.get("data") or "{}")
@@ -797,7 +996,7 @@ async def weekly_xlsm(request: Request, rc_auth: str | None = Cookie(default=Non
             raise HTTPException(413, "사진 한 장이 너무 큽니다.")
         photos[key] = b
     with _menu_lock:
-        st = _weekly_store_read()
+        st = _weekly_store_read(user)
     settings = {**st["settings"], **{k: v for k, v in (data.get("settings") or {}).items() if k in weekly_book.SETTING_CELLS}}
     try:
         name, blob, info = weekly_book.build_weekly(monday, data.get("days") or [], settings, st["menus"], photos,
@@ -817,7 +1016,7 @@ async def weekly_xlsm(request: Request, rc_auth: str | None = Cookie(default=Non
 async def create_job(files: list[UploadFile] = File(...), rc_auth: str | None = Cookie(default=None),
                      opt_crop: str | None = Form(None), opt_deskew: str | None = Form(None),
                      opt_whiten: str | None = Form(None), opt_bg: str | None = Form(None)):
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
     if not os.environ.get("GEMINI_API_KEY"):
         raise HTTPException(500, "서버에 GEMINI_API_KEY 가 설정되어 있지 않습니다.")
     if not files:
@@ -861,14 +1060,15 @@ async def create_job(files: list[UploadFile] = File(...), rc_auth: str | None = 
     options = clean_options({"crop": _flag(opt_crop), "deskew": _flag(opt_deskew),
                              "whiten": _flag(opt_whiten), "bg": opt_bg})
     write_status(job_id, state="queued", phase="대기 중", progress=0, file_count=saved, options=options,
-                 skipped=skipped, created=datetime.now().isoformat(timespec="seconds"))
+                 skipped=skipped, created=datetime.now().isoformat(timespec="seconds"), owner=user)
     work_q.put(job_id)
     return {"job_id": job_id, "file_count": saved, "skipped": skipped}
 
 
 @app.get("/api/jobs/{job_id}")
 def job_info(job_id: str, rc_auth: str | None = Cookie(default=None)):
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
+    _job_guard(job_id, user)
     st = read_status(job_id)
     st["queue_ahead"] = max(0, list(work_q.queue).index(job_id)) if job_id in list(work_q.queue) else 0
     logp = JOBS_DIR / job_id / "log.txt"
@@ -919,7 +1119,8 @@ def _receipt_rows(job_id: str) -> list[dict]:
 @app.get("/api/jobs/{job_id}/receipts")
 def job_receipts(job_id: str, rc_auth: str | None = Cookie(default=None)):
     """판독 결과 요약 (화면 표용). 확인이 필요한 영수증을 맨 위로 올린다."""
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
+    _job_guard(job_id, user)
     rows = _receipt_rows(job_id)
     return {"rows": rows, "need_count": sum(r["needs_check"] for r in rows),
             "edited_count": sum(r["edited"] for r in rows),
@@ -942,7 +1143,8 @@ def fix_receipt(job_id: str, key: str, fix: ReceiptFix, rc_auth: str | None = Co
     판독 원본 값(상호, 거래일자, 총액)은 그대로 두고, 고친 값은 장부거래처/장부날짜/장부금액에
     따로 적는다. 나중에 '모델이 어디서 틀렸는지' 비교할 수 있게 하려는 것이다.
     """
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
+    _job_guard(job_id, user)
     jd = job_dir(job_id)
     m = re.fullmatch(r"(.+)#(\d+)", key)
     if not m:
@@ -1027,7 +1229,8 @@ def _write_images_zip(jd: Path):
 @app.delete("/api/jobs/{job_id}/receipts/{key}")
 def delete_receipt(job_id: str, key: str, rc_auth: str | None = Cookie(default=None)):
     """영수증이 아니거나 필요 없는 사진을 결과에서 완전히 지운다. (엑셀·사진 묶음에서도 빠진다)"""
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
+    _job_guard(job_id, user)
     jd = job_dir(job_id)
     jpath, idx = _receipt_json_path(jd, key)
     lock = _rebuild_locks.setdefault(job_id, threading.Lock())
@@ -1065,7 +1268,8 @@ def delete_receipt(job_id: str, key: str, rc_auth: str | None = Cookie(default=N
 @app.get("/api/jobs/{job_id}/image/{name}")
 def receipt_image(job_id: str, name: str, rc_auth: str | None = Cookie(default=None)):
     """수정할 때 원본과 비교할 수 있게 정리된 영수증 사진을 보여 준다."""
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
+    _job_guard(job_id, user)
     folder = (job_dir(job_id) / "정리결과").resolve()
     path = (folder / Path(name).name).resolve()
     if path.parent != folder or not path.is_file():
@@ -1086,10 +1290,14 @@ class AccumReq(BaseModel):
     month: str | None = None
 
 
-def _valid_job_ids(ids: list[str]) -> list[str]:
+def _valid_job_ids(ids: list[str], user: str | None = None) -> list[str]:
     out = []
     for jid in ids[:MAX_ACCUM_JOBS]:
         if isinstance(jid, str) and re.fullmatch(r"[0-9a-f]{16}", jid) and (JOBS_DIR / jid).is_dir() and jid not in out:
+            if user:
+                owner = read_status(jid).get("owner")
+                if owner and owner != user:
+                    continue
             out.append(jid)
     return out
 
@@ -1154,10 +1362,11 @@ def merge_jobs(job_ids: list[str], dest: Path) -> int:
 @app.post("/api/accumulate/sync")
 def accumulate_sync(req: AccumReq, rc_auth: str | None = Cookie(default=None)):
     """누적에 담은 회차들의 현재 상태를 알려 주고, 한 달 동안 지워지지 않게 표시한다."""
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
     out = []
     for jid in req.job_ids[:MAX_ACCUM_JOBS]:
-        if not (isinstance(jid, str) and re.fullmatch(r"[0-9a-f]{16}", jid)) or not (JOBS_DIR / jid).is_dir():
+        if not (isinstance(jid, str) and re.fullmatch(r"[0-9a-f]{16}", jid)) or not (JOBS_DIR / jid).is_dir() \
+                or jid not in _valid_job_ids([jid], user):
             out.append({"job_id": jid, "exists": False})
             continue
         st = read_status(jid)
@@ -1175,10 +1384,10 @@ def accumulate_sync(req: AccumReq, rc_auth: str | None = Cookie(default=None)):
 @app.post("/api/accumulate/{kind}")
 def accumulate_download(kind: str, req: AccumReq, rc_auth: str | None = Cookie(default=None)):
     """담아 둔 회차를 한꺼번에 합쳐 지출현황 엑셀(ledger) 또는 정리된 사진 zip(images)으로 내려 준다."""
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
     if kind not in ("ledger", "images"):
         raise HTTPException(404, "알 수 없는 요청입니다.")
-    ids = [j for j in _valid_job_ids(req.job_ids) if read_status(j).get("state") == "done"]
+    ids = [j for j in _valid_job_ids(req.job_ids, user) if read_status(j).get("state") == "done"]
     if not ids:
         raise HTTPException(404, "합칠 수 있는 작업이 없습니다. 서버가 다시 시작되면 이전 작업이 지워질 수 있습니다.")
     month = req.month if req.month and re.fullmatch(r"\d{4}-\d{2}", req.month) else None
@@ -1214,7 +1423,8 @@ def accumulate_download(kind: str, req: AccumReq, rc_auth: str | None = Cookie(d
 
 @app.get("/api/jobs/{job_id}/download/{kind}")
 def download(job_id: str, kind: str, rc_auth: str | None = Cookie(default=None)):
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
+    _job_guard(job_id, user)
     jd = job_dir(job_id)
     files = {
         "ledger": (jd / "지출현황.xlsx", "식자재_지출현황.xlsx"),
@@ -1443,7 +1653,8 @@ def orient_photos(files: list[UploadFile] = File(...), rc_auth: str | None = Coo
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: str, rc_auth: str | None = Cookie(default=None)):
     """사용자가 직접 자기 작업(영수증 포함)을 즉시 삭제"""
-    _check_auth(rc_auth)
+    user = _check_auth(rc_auth)
+    _job_guard(job_id, user)
     shutil.rmtree(job_dir(job_id), ignore_errors=True)
     return {"deleted": True}
 
