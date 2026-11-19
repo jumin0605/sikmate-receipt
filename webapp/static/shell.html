@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>식담온</title>
+<title>식단온</title>
+<script src="/static/account.js"></script>
 <style>
 html,body{height:100%;margin:0}
 body{display:flex;flex-direction:column;font-family:"맑은 고딕","Malgun Gothic",system-ui,sans-serif;background:#f1f5f9}
@@ -13,18 +14,25 @@ body{display:flex;flex-direction:column;font-family:"맑은 고딕","Malgun Goth
 .sp{flex:1}
 .bar a.sm{color:#c7ece8;font-size:12.5px;text-decoration:none}
 .bar a.sm:hover{color:#fff}
+.who{color:#fff;font-size:13px;margin-right:12px;white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis}
+.bar form{margin:0 0 0 12px}
+.bar form button{background:transparent;border:1px solid #5eb3aa;color:#c7ece8;border-radius:6px;font:inherit;font-size:12.5px;padding:3px 9px;cursor:pointer}
+.bar form button:hover{color:#fff;border-color:#fff}
 .frames{flex:1;position:relative;min-height:0}
 iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:none;background:#fff}
 iframe.on{display:block}
 @media print{.bar{display:none}}
 </style></head><body>
 <div class="bar">
-  <a class="logo" href="/" target="_top"><i>식</i>식담온</a>
+  <a class="logo" href="/" target="_top"><i>식</i>식단온</a>
   <button class="tab" data-k="receipt">영수증 정리</button>
   <button class="tab" data-k="menu">신태양 식단표 · 발주서</button>
   <button class="tab" data-k="photo">식단 사진</button>
   <span class="sp"></span>
-  <a class="sm" href="/" target="_top">소개</a>
+  <span class="who" id="who"></span>
+  <a class="sm" href="/account" target="_top">내 계정</a>
+  <a class="sm" href="/" target="_top" style="margin-left:12px">소개</a>
+  <form method="post" action="/logout" target="_top"><button type="submit">로그아웃</button></form>
 </div>
 <div class="frames">
   <iframe id="f-receipt" title="영수증 정리"></iframe>
@@ -35,7 +43,11 @@ iframe.on{display:block}
 // 만료된 세션 등으로 이 화면이 다른 화면 안에 겹쳐 열리면 맨 위로 빠져나온다
 if (window.top !== window) { window.top.location.href = location.href; }
 var SRC = { receipt: '/app/receipt', menu: '/menu', photo: '/photo' };
-var TITLE = { receipt: '식담온 · 영수증 정리', menu: '식담온 · 신태양 식단표·발주서', photo: '식담온 · 식단 사진' };
+var TITLE = { receipt: '식단온 · 영수증 정리', menu: '식단온 · 신태양 식단표·발주서', photo: '식단온 · 식단 사진' };
+try {
+  var mm = document.cookie.match(/(?:^|; )sm_name=([^;]*)/);
+  if (mm) document.getElementById('who').textContent = decodeURIComponent(mm[1]) + '님';
+} catch (e) {}
 function fixLinks(f){
   try {
     f.contentDocument.querySelectorAll('a[href="/"]').forEach(function(a){ a.target = '_top'; });
