@@ -459,7 +459,7 @@ class AutoName(unittest.TestCase):
 class Wiring(unittest.TestCase):
     def test_app_and_page_are_connected(self):
         app = (ROOT / "app.py").read_text(encoding="utf-8")
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        html = (ROOT / "static" / "inspection.html").read_text(encoding="utf-8")
         self.assertIn('@app.post("/api/inspection")', app)
         self.assertIn("build_inspection(core", app)
         self.assertIn("fetchAndSave('/api/inspection'", html)
@@ -483,6 +483,12 @@ class Wiring(unittest.TestCase):
         self.assertIn("fd.append('rotations'", html)
         self.assertIn(">목록 비우기<", html)
         self.assertNotIn("사진 모두 빼기", html)
+        # 영수증 정리 화면에서는 검수서가 빠지고, 위쪽 탭과 경로가 따로 있다
+        receipt = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="insp"', receipt)
+        shell = (ROOT / "static" / "shell.html").read_text(encoding="utf-8")
+        self.assertIn("insp: '/inspection'", shell)
+        self.assertIn('@app.get("/inspection"', app)
 
 
 if __name__ == "__main__":

@@ -612,7 +612,7 @@ def index(rc_auth: str | None = Cookie(default=None)):
     """실제 도구. 로그인한 사람만 열린다."""
     if not ACCOUNTS.read_token(rc_auth):
         return _login_page("/app")
-    # 영수증 정리 · 신태양 식단표/발주서 · 식단 사진을 탭으로 오가는 화면 (각 도구는 아래 경로에서 불러온다)
+    # 영수증 정리 · 식자재 검수서 · 신태양 식단표/발주서 · 식단 사진을 탭으로 오가는 화면 (각 도구는 아래 경로에서 불러온다)
     return FileResponse(HERE / "static" / "shell.html", headers={"Cache-Control": "no-cache"})
 
 
@@ -623,6 +623,14 @@ def receipt_page(rc_auth: str | None = Cookie(default=None)):
         return _login_page("/app")
     # 업데이트 뒤에도 예전 화면이 브라우저에 남아 새 기능이 안 보이는 일을 막는다 (매번 변경 여부만 확인)
     return FileResponse(HERE / "static" / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/inspection", response_class=HTMLResponse)
+def inspection_page(rc_auth: str | None = Cookie(default=None)):
+    """식자재 검수서(원산지 표시) 도구. 영수증 정리와 따로 /app 화면의 탭 안에서 열린다."""
+    if not ACCOUNTS.read_token(rc_auth):
+        return _login_page("/app")
+    return FileResponse(HERE / "static" / "inspection.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/menu", response_class=HTMLResponse)
