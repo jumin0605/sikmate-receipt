@@ -793,10 +793,12 @@ table{width:100%;font-size:13px;color:#475569;margin-top:6px;border-collapse:col
 <script>
 var CK=@@CK@@;
 function pay(m){
+  var easy=(m==='토스페이');if(easy)m='카드';
   document.getElementById('e').textContent='';
   fetch('/api/billing/order',{method:'POST',credentials:'same-origin'}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.detail||'주문을 만들지 못했습니다.');return j;});}).then(function(o){
-    TossPayments(CK).requestPayment(m,{amount:o.amount,orderId:o.orderId,orderName:o.orderName,
-      successUrl:location.origin+'/pay/success',failUrl:location.origin+'/pay/fail'}).catch(function(err){
+    var opt={amount:o.amount,orderId:o.orderId,orderName:o.orderName,successUrl:location.origin+'/pay/success',failUrl:location.origin+'/pay/fail'};
+    if(easy){opt.flowMode='DIRECT';opt.easyPay='토스페이';}
+    TossPayments(CK).requestPayment(m,opt).catch(function(err){
       if(err&&err.code!=='USER_CANCEL')document.getElementById('e').textContent=(err.message||'결제창을 열지 못했습니다.');});
   }).catch(function(err){document.getElementById('e').textContent=err.message;});
 }
