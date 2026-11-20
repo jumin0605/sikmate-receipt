@@ -7,6 +7,7 @@
 환경변수
   GEMINI_API_KEY    (필수) 결제 계정이 연결된 프로젝트의 키를 쓸 것
   APP_ACCESS_CODE   (권장) 회원가입 코드. 파일럿 참여자에게만 알려 준다. 비우면 누구나 가입할 수 있다 (로그인은 항상 필요)
+  TOSS_CLIENT_KEY / TOSS_SECRET_KEY  토스페이먼츠 키 (결제). 나머지 설정은 billing.py 맨 위 설명 참고
   APP_SESSION_SALT  (선택) 로그인 서명 키. 비우면 저장 폴더의 session.key 를 쓴다
   DATA_DIR          작업 파일 저장 위치 (기본 ./data)
   RETENTION_DAYS    작업 파일 보관 일수 (기본 7)
@@ -44,6 +45,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from accounts import AccountError, AccountStore, LoginThrottle
+import billing
 from env_config import load_project_env
 from inspection import (INSP_ALLOWED_EXT, build_inspection, detect_rotation, inspection_date_stamp,
                         norm_rotation, photos_zip, read_label)
@@ -125,7 +127,19 @@ def _check_auth(token: str | None) -> str:
     user = ACCOUNTS.read_token(token)
     if not user:
         raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+    rec = ACCOUNTS.get(user)
+    if rec is not None and not billing.status(rec, ACCOUNTS.user_dir(rec))["active"]:
+        raise HTTPException(status_code=402, detail="이용 기간이 끝났습니다. 이용권을 결제해 주세요.")
     return user
+
+
+def _expired_redirect(token: str | None):
+    """BILLING_ENFORCE=1 이고 체험·이용 기간이 끝났으면 결제 화면으로 보낸다."""
+    user = ACCOUNTS.read_token(token)
+    rec = ACCOUNTS.get(user) if user else None
+    if rec is not None and not billing.status(rec, ACCOUNTS.user_dir(rec))["active"]:
+        return RedirectResponse("/pricing", status_code=303)
+    return None
 
 
 def _udir(user: str) -> Path:
@@ -508,7 +522,7 @@ def _esc(s) -> str:
     return _html.escape(str(s or ""), quote=True)
 
 
-SAFE_NEXT = ("/app", "/menu", "/photo")
+SAFE_NEXT = ("/app", "/menu", "/photo", "/pricing")
 
 LOGIN_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>로그인 | 식단온</title><style>
@@ -612,6 +626,9 @@ def index(rc_auth: str | None = Cookie(default=None)):
     """실제 도구. 로그인한 사람만 열린다."""
     if not ACCOUNTS.read_token(rc_auth):
         return _login_page("/app")
+    _gate = _expired_redirect(rc_auth)
+    if _gate:
+        return _gate
     # 영수증 정리 · 식자재 검수서 · 신태양 식단표/발주서 · 식단 사진을 탭으로 오가는 화면 (각 도구는 아래 경로에서 불러온다)
     return FileResponse(HERE / "static" / "shell.html", headers={"Cache-Control": "no-cache"})
 
@@ -621,6 +638,9 @@ def receipt_page(rc_auth: str | None = Cookie(default=None)):
     """영수증 정리 도구 본체 (/app 화면의 탭 안에서 열린다)."""
     if not ACCOUNTS.read_token(rc_auth):
         return _login_page("/app")
+    _gate = _expired_redirect(rc_auth)
+    if _gate:
+        return _gate
     # 업데이트 뒤에도 예전 화면이 브라우저에 남아 새 기능이 안 보이는 일을 막는다 (매번 변경 여부만 확인)
     return FileResponse(HERE / "static" / "index.html", headers={"Cache-Control": "no-cache"})
 
@@ -630,6 +650,9 @@ def inspection_page(rc_auth: str | None = Cookie(default=None)):
     """식자재 검수서(원산지 표시) 도구. 영수증 정리와 따로 /app 화면의 탭 안에서 열린다."""
     if not ACCOUNTS.read_token(rc_auth):
         return _login_page("/app")
+    _gate = _expired_redirect(rc_auth)
+    if _gate:
+        return _gate
     return FileResponse(HERE / "static" / "inspection.html", headers={"Cache-Control": "no-cache"})
 
 
@@ -638,6 +661,9 @@ def menu_page(rc_auth: str | None = Cookie(default=None)):
     """식단표·발주서 생성기. 로그인한 사람만 열린다."""
     if not ACCOUNTS.read_token(rc_auth):
         return _login_page("/menu")
+    _gate = _expired_redirect(rc_auth)
+    if _gate:
+        return _gate
     return FileResponse(HERE / "static" / "menu.html", headers={"Cache-Control": "no-cache"})
 
 
@@ -646,6 +672,9 @@ def photo_page(rc_auth: str | None = Cookie(default=None)):
     """식단 사진 정리 (원근·기울기·회전·용량 맞추기·날짜 이름). 사진은 브라우저 안에서만 처리한다."""
     if not ACCOUNTS.read_token(rc_auth):
         return _login_page("/photo")
+    _gate = _expired_redirect(rc_auth)
+    if _gate:
+        return _gate
     return FileResponse(HERE / "static" / "photo.html", headers={"Cache-Control": "no-cache"})
 
 
@@ -683,7 +712,9 @@ def signup(request: Request, username: str = Form(""), password: str = Form(""),
     except AccountError as e:
         return _login_page(dest, str(e), "signup", 400, username, name)
     _init_user_data(rec, first)
-    return _set_login(RedirectResponse(dest, status_code=303), rec, request)
+    # 결제 키가 준비돼 있으면 가입 직후 이용권 안내 화면을 먼저 보여 준다 (나중에 하기를 누르면 무료 체험으로 바로 시작)
+    go = f"/pricing?welcome=1&next={dest}" if billing.configured() else dest
+    return _set_login(RedirectResponse(go, status_code=303), rec, request)
 
 
 @app.post("/logout")
@@ -705,7 +736,7 @@ button{background:#0f766e;color:#fff;border:0;border-radius:10px;font-weight:700
 <h4>비밀번호 바꾸기</h4><form method=post action=/account/password><input type=password name=old placeholder="지금 비밀번호" autocomplete=current-password required>
 <input type=password name=new placeholder="새 비밀번호 (6자 이상)" autocomplete=new-password required>
 <input type=password name=new2 placeholder="새 비밀번호 한 번 더" autocomplete=new-password required><button>바꾸기</button></form>
-<form method=post action=/logout><button class=out>로그아웃</button></form><a href="/app" target=_top>← 돌아가기</a></div>"""
+<form method=post action=/logout><button class=out>로그아웃</button></form><a href="/pricing" target=_top>이용권 · 결제</a><a href="/app" target=_top>← 돌아가기</a></div>"""
 
 
 def _account_page(rec: dict, msg: str = "", ok: bool = False, status: int = 200) -> HTMLResponse:
@@ -742,6 +773,120 @@ def account_password(request: Request, old: str = Form(""), new: str = Form(""),
         return _account_page(rec, str(e), status=400)
     resp = _account_page(rec, "비밀번호를 바꿨습니다. 다른 곳에서 로그인해 둔 기기는 로그아웃됩니다.", ok=True)
     return _set_login(resp, rec, request)
+
+
+PRICING_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>이용권 결제 | 식단온</title><script src="https://js.tosspayments.com/v1/payment"></script>
+<style>body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f0fdfa}
+.box{background:#fff;padding:28px 32px;border-radius:16px;box-shadow:0 6px 24px #0f172a14;width:min(420px,92vw);box-sizing:border-box}
+h3{margin:0 0 6px;color:#115e59}.st{margin:10px 0 14px;padding:10px 12px;border-radius:10px;background:#ecfeff;color:#155e75;font-size:14px}
+.st.bad{background:#fef2f2;color:#b91c1c}.price{font-size:30px;font-weight:800;color:#0f172a;margin:8px 0}.price small{font-size:14px;font-weight:400;color:#64748b}
+button{width:100%;padding:14px;font-size:16px;margin-top:10px;border:0;border-radius:10px;font-weight:700;cursor:pointer}
+.toss{background:#0064ff;color:#fff}.card{background:#0f766e;color:#fff}.err{color:#b91c1c;font-size:14px}
+a{display:block;text-align:center;margin-top:14px;color:#64748b;font-size:14px;text-decoration:none}ul{padding-left:18px;color:#475569;font-size:14px;line-height:1.7}
+table{width:100%;font-size:13px;color:#475569;margin-top:6px;border-collapse:collapse}td{padding:3px 0;border-top:1px solid #e2e8f0}</style>
+<div class=box><h3>@@NAME@@</h3><div class=price>@@PRICE@@원 <small>/ @@DAYS@@일</small></div>
+<div class="st @@STCLS@@">@@STATUS@@</div>
+<ul><li>영수증 정리 · 검수서 · 식단표/발주서 · 식단 사진을 모두 이용</li><li>자동 갱신 없음: 필요할 때 한 번씩 결제 (남은 기간 뒤에 이어 붙습니다)</li><li>결제는 토스페이먼츠로 안전하게 처리됩니다</li></ul>
+@@BUTTONS@@<p class=err id=e>@@MSG@@</p>@@HIST@@
+<a href="@@NEXT@@" target=_top>@@LATER@@</a></div>
+<script>
+var CK=@@CK@@;
+function pay(m){
+  document.getElementById('e').textContent='';
+  fetch('/api/billing/order',{method:'POST',credentials:'same-origin'}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.detail||'주문을 만들지 못했습니다.');return j;});}).then(function(o){
+    TossPayments(CK).requestPayment(m,{amount:o.amount,orderId:o.orderId,orderName:o.orderName,
+      successUrl:location.origin+'/pay/success',failUrl:location.origin+'/pay/fail'}).catch(function(err){
+      if(err&&err.code!=='USER_CANCEL')document.getElementById('e').textContent=(err.message||'결제창을 열지 못했습니다.');});
+  }).catch(function(err){document.getElementById('e').textContent=err.message;});
+}
+</script>"""
+
+
+def _won(n: int) -> str:
+    return f"{int(n):,}"
+
+
+def _fmt_date(ts: int) -> str:
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+
+def _pricing_html(rec: dict, msg: str = "", welcome: bool = False, nxt: str = "/app", status: int = 200) -> HTMLResponse:
+    c = billing.cfg()
+    st = billing.status(rec, ACCOUNTS.user_dir(rec))
+    if st["kind"] == "free":
+        text = "결제 없이 이용 중인 계정입니다."
+    elif st["kind"] == "paid":
+        text = f"이용권 사용 중 · {_fmt_date(st['paid_until'])} 까지 (남은 {st['days_left']}일)"
+    elif st["kind"] == "trial":
+        text = f"무료 체험 중 · {_fmt_date(st['trial_end'])} 까지 (남은 {st['days_left']}일)"
+    else:
+        text = "이용 기간이 끝났습니다. 이용권을 결제하면 바로 다시 쓸 수 있습니다."
+    if billing.configured():
+        buttons = ("<button class=toss onclick=\"pay('토스페이')\">토스페이로 결제</button>"
+                   "<button class=card onclick=\"pay('카드')\">카드로 결제</button>")
+    else:
+        buttons = "<p class=err>결제 기능을 준비 중입니다. 관리자에게 문의해 주세요.</p>"
+    rows = "".join(f"<tr><td>{_fmt_date(h['paidAt'])}</td><td>{_esc(h['name'])}</td><td align=right>{_won(h['amount'])}원</td></tr>"
+                   for h in billing.history(ACCOUNTS.user_dir(rec))[:10])
+    hist = f"<table>{rows}</table>" if rows else ""
+    later = "나중에 하고 무료 체험 시작 →" if welcome else "← 돌아가기"
+    html = (PRICING_PAGE.replace("@@NAME@@", _esc(c["name"])).replace("@@PRICE@@", _won(c["price"])).replace("@@DAYS@@", str(c["days"]))
+            .replace("@@STATUS@@", _esc(text)).replace("@@STCLS@@", "bad" if st["kind"] == "expired" else "")
+            .replace("@@BUTTONS@@", buttons).replace("@@MSG@@", _esc(msg)).replace("@@HIST@@", hist)
+            .replace("@@NEXT@@", _esc(nxt if nxt in SAFE_NEXT else "/app")).replace("@@LATER@@", later)
+            .replace("@@CK@@", json.dumps(c["client_key"])))
+    return HTMLResponse(html, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/pricing", response_class=HTMLResponse)
+def pricing_page(welcome: int = 0, next: str = "/app", rc_auth: str | None = Cookie(default=None)):
+    user = ACCOUNTS.read_token(rc_auth)
+    if not user:
+        return _login_page("/pricing")
+    return _pricing_html(ACCOUNTS.get(user), welcome=bool(welcome), nxt=next)
+
+
+@app.post("/api/billing/order")
+def billing_order(rc_auth: str | None = Cookie(default=None)):
+    user = ACCOUNTS.read_token(rc_auth)
+    if not user:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+    if not billing.configured():
+        raise HTTPException(status_code=503, detail="결제 기능을 준비 중입니다.")
+    return JSONResponse(billing.new_order(ACCOUNTS.user_dir(ACCOUNTS.get(user))), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/pay/success", response_class=HTMLResponse)
+def pay_success(paymentKey: str = "", orderId: str = "", amount: int = 0, rc_auth: str | None = Cookie(default=None)):
+    """토스 결제창에서 결제를 마치고 돌아오는 주소. 여기서 서버가 결제를 승인한다."""
+    user = ACCOUNTS.read_token(rc_auth)
+    if not user:
+        return _login_page("/pricing", "결제 확인을 위해 다시 로그인해 주세요. 결제가 되었다면 자동으로 취소되지 않으니 관리자에게 문의해 주세요.")
+    rec = ACCOUNTS.get(user)
+    try:
+        r = billing.confirm(ACCOUNTS.user_dir(rec), paymentKey, orderId, amount)
+    except billing.PayError as e:
+        return _pricing_html(rec, str(e), status=400)
+    msg = "" if r["already"] else f"결제가 완료됐습니다. {_fmt_date(r['paid_until'])} 까지 이용할 수 있습니다."
+    return _pricing_html(rec, msg)
+
+
+@app.get("/pay/fail", response_class=HTMLResponse)
+def pay_fail(message: str = "", code: str = "", rc_auth: str | None = Cookie(default=None)):
+    user = ACCOUNTS.read_token(rc_auth)
+    if not user:
+        return _login_page("/pricing")
+    return _pricing_html(ACCOUNTS.get(user), "결제하지 못했습니다. " + message[:100])
+
+
+@app.get("/api/billing/status")
+def billing_status(rc_auth: str | None = Cookie(default=None)):
+    user = ACCOUNTS.read_token(rc_auth)
+    if not user:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+    rec = ACCOUNTS.get(user)
+    return JSONResponse(billing.status(rec, ACCOUNTS.user_dir(rec)), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/me")
