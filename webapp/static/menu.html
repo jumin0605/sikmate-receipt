@@ -459,17 +459,28 @@ $('#buildo').onclick=()=>{if(ORD.rows.length&&!confirm('식단에서 다시 만�
 $('#saveo').onclick=()=>{ORD.meta={od:$('#od').value,rd:$('#rd').value,pf:$('#pf').value,pt:$('#pt').value,md:$('#md').value};S.orders[$('#od').value]=clone({rows:ORD.rows,unl:ORD.unl,meta:ORD.meta,t:Date.now()});save();};
 ['rd','md'].forEach(k=>$('#'+k).onchange=renderOrder);
 $('#printo').onclick=()=>window.print();
-$('#xlso').onclick=()=>{const od=$('#od').value;const S2=S.settings;let n=0;
-  let h=`<table><tr><th colspan="6" style="font-size:18pt">발 주 서</th></tr><tr><td colspan="4"></td><td>발주일시 :</td><td>${$('#m_od').textContent}</td></tr><tr><td colspan="4"></td><td>납품업체 :</td><td>${esc($('#m_v').textContent)}</td></tr><tr><td colspan="4"></td><td>입 고 일 :</td><td>${$('#m_rd').textContent}</td></tr><tr><td colspan="4"></td><td>담 당 자 :</td><td>${esc(S2.dietitian)}</td></tr>`;
-  h+='<tr><th>순 서</th><th>식재료명</th><th>단 위</th><th>발 주 량</th><th>규 격</th><th>비 고</th></tr>';
+$('#xlso').onclick=()=>{const od=$('#od').value;const S2=S.settings;let n=0,mn=0;
+  const odd=pd(od),rdd=pd($('#rd').value||od);
+  const fmt=d=>d.getFullYear()+'. '+(d.getMonth()+1)+'. '+d.getDate()+'.'+dow(d);
+  const B='border:.5pt solid #000;',F='font-family:맑은 고딕;mso-number-format:"\\@";vertical-align:middle;text-align:center;';
+  const c=(v,x='')=>'<td style="'+F+x+'">'+v+'</td>';
+  const vend=($('#m_v').textContent||'').trim();
+  let h='<table style="border-collapse:collapse"><col width="45"><col width="190"><col width="80"><col width="90"><col width="110"><col width="200">';
+  h+='<tr style="height:15pt"><td colspan="6"></td></tr>';
+  h+='<tr style="height:42pt"><td colspan="6" style="'+F+'font-size:22pt;font-weight:bold;letter-spacing:8pt">발 주 서</td></tr>';
+  const meta=(a,b)=>'<tr style="height:20pt"><td colspan="3"></td>'+c(a,'font-size:11pt;')+'<td colspan="2" style="'+F+'font-size:11pt;">'+b+'</td></tr>';
+  h+=meta('발주일시 :',fmt(odd))+meta('납품업체 :',esc(vend))+meta('입 고 일 :',fmt(rdd))+meta('담 당 자 :',esc(S2.dietitian));
   const mdt=$('#md').value?pd($('#md').value):null;
+  h+='<tr style="height:20pt"><td colspan="6" style="'+F+'font-size:11pt;color:#FF0000;">'+(mdt?'육류 '+(mdt.getMonth()+1)+'/'+mdt.getDate()+'일 '+dow(mdt)+'요일 입고':'')+'</td></tr>';
+  h+='<tr style="height:22pt;background:#FFFF00">'+['순 서','식재료명','단 위','발 주 량','규 격','비 고'].map(x=>'<td style="'+F+B+'background:#FFFF00;font-size:11pt;font-weight:bold;letter-spacing:3pt">'+x+'</td>').join('')+'</tr>';
   for(const sec of ['meat','bom','recur','spice','snack','supply','stock','manual']){
     const rs=ORD.rows.filter(r=>r.sec===sec&&r.on&&r.name);if(!rs.length)continue;
-    let title=SEC[sec];if(sec==='meat'&&mdt)title=`육류 ${md(mdt)}.${dow(mdt)}욜 입고`;
-    h+=`<tr><td></td><td colspan="5"><b>${esc(title)}</b></td></tr>`;
-    for(const r of rs){n++;h+=`<tr><td>${n}</td><td>${esc(r.name)}</td><td>${esc(r.spec)}</td><td>${esc(r.qty)}</td><td>${esc(r.cust)}</td><td>${esc(r.note)}</td></tr>`;}
+    if(sec!=='meat'&&sec!=='bom'&&sec!=='recur'&&sec!=='manual'){h+='<tr style="height:20pt">'+c('',B)+c('<b>'+esc(SEC[sec])+'</b>',B+'font-size:14pt;')+c('',B)+c('',B)+c('',B)+c('',B)+'</tr>';}
+    for(const r of rs){const num=sec==='meat'?++mn:++n;
+      h+='<tr style="height:22pt">'+c(num,B+'font-size:14pt;')+c(esc(r.name),B+'font-size:14pt;')+c(esc(r.spec),B+'font-size:14pt;')+c(esc(r.qty),B+'font-size:14pt;')+c(esc(r.cust),B+'font-size:14pt;')+c(esc(r.note),B+'font-size:10pt;')+'</tr>';}
   }
-  xls(`발주서_${od}.xls`,h+'</table>');};
+  const html='\ufeff<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>'+(odd.getMonth()+1)+'월'+odd.getDate()+'일</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]--></head><body>'+h+'</table></body></html>';
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([html],{type:'application/vnd.ms-excel'}));a.download='발주서'+(odd.getMonth()+1)+'월_'+(odd.getMonth()+1)+'월'+odd.getDate()+'일.xls';a.click();};
 // ---------- 고정품목 / 설정
 function renderFixed(){
   const F=fixedLists();const names={meat:'육류 4종 (거의 고정, 매 발주)',spice:'기본양념 (매 발주 고정)',snack:'간식 (고정 목록)',supply:'소모품 (고정)'};
