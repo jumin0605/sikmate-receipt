@@ -964,6 +964,7 @@ def menu_state_put(body: MenuStateIn, rc_auth: str | None = Cookie(default=None)
 #   메뉴DB 추가분과 설정은 MENU_STORE_DIR/weekly_book.json 에 남긴다 (영구 디스크)
 # ---------------------------------------------------------------------------
 import weekly_book  # noqa: E402
+import order_xlsx  # noqa: E402
 
 WEEKLY_MAX_PHOTOS = 28
 WEEKLY_MAX_PHOTO_MB = 8
@@ -1126,6 +1127,43 @@ async def order_inspection_names(request: Request, rc_auth: str | None = Cookie(
         return JSONResponse(weekly_book.read_inspection_names(b, name), headers={"Cache-Control": "no-store"})
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.post("/api/order/xlsx-items")
+async def order_xlsx_items(request: Request, rc_auth: str | None = Cookie(default=None)):
+    """내 엑셀 발주서에서 날짜별 시트와 품목·비고 칸을 읽어 준다 (저장하지 않음)."""
+    _check_auth(rc_auth)
+    b, name, _ = await _read_upload(request)
+    try:
+        sheets = order_xlsx.list_order_sheets(b)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "엑셀 발주서를 읽지 못했습니다. 발주서가 들어 있는 엑셀인지 확인해 주세요.")
+    if not sheets:
+        raise HTTPException(400, "'식재료명'·'비고' 머리글이 있는 발주서 시트를 찾지 못했습니다.")
+    return JSONResponse({"name": name, "sheets": sheets}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/order/xlsx-fill")
+async def order_xlsx_fill(request: Request, rc_auth: str | None = Cookie(default=None)):
+    """엑셀 발주서의 비고 칸만 고쳐 새 엑셀로 돌려준다. 원본 파일의 사진·서식은 그대로 둔다 (서버에 저장하지 않음)."""
+    _check_auth(rc_auth)
+    b, name, form = await _read_upload(request)
+    try:
+        edits = json.loads(str(form.get("edits") or "[]"))
+        if not isinstance(edits, list) or len(edits) > 2000:
+            raise ValueError("edits")
+        edits = [{"sheet": str(e["sheet"]), "cell": str(e["cell"]), "text": str(e.get("text", ""))[:200]} for e in edits]
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "적을 내용이 올바르지 않습니다.")
+    try:
+        out = order_xlsx.fill_order_notes(b, edits)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    from urllib.parse import quote
+    base = name.rsplit(".", 1)[0]
+    fn = quote(f"{base}_비고.xlsx")
+    return Response(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fn}", "Cache-Control": "no-store"})
 
 
 @app.post("/api/weekly/xlsm")
