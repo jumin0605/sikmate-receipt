@@ -65,7 +65,18 @@ table{border-collapse:collapse;background:#fff}
 #insp_tbl th{background:#eef2f7;font-weight:normal;position:sticky;top:0}
 #insp_tbl tr.nomatch td{background:#fff8e1}
 #insp_tbl tr.skip td{color:#9aa}
-#insp_tbl select{max-width:180px}
+#insp_tbl select,#xl_tbl select{max-width:180px}
+#xl_box{background:#f4fbf2;border:1px solid #9fd28f;border-radius:6px;padding:8px 10px;margin:8px 0;font-size:12.5px;max-width:1010px}
+#xl_box .hd{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+#xl_box select{padding:4px 5px;border:1px solid #b9c2cf;border-radius:4px;font-family:inherit;font-size:12.5px}
+#xl_tbl{margin-top:8px;max-height:420px;overflow:auto;display:none}
+#xl_tbl.on{display:block}
+#xl_tbl table{width:100%;border-collapse:collapse;background:#fff}
+#xl_tbl th,#xl_tbl td{border:1px solid #c5ccd6;padding:2px 4px;font-size:12px}
+#xl_tbl th{background:#eef2f7;font-weight:normal;position:sticky;top:0}
+#xl_tbl tr.nomatch td{background:#fff8e1}
+#xl_tbl input[type=text]{width:100%;border:0;background:transparent}
+#xl_msg{margin-left:6px;color:#1f5a1f}
 #insp_tbl input[type=text]{width:100%;border:0;background:transparent}
 #insp_msg{margin-left:6px;color:#1f4e78}
 #tab-weekly h3{font-size:14px;margin:16px 0 6px;color:#1f4e78}
@@ -175,6 +186,16 @@ table{border-collapse:collapse;background:#fff}
    <span id="insp_msg"></span></div>
   <div class="small">식자재 검수서 탭에서 검수서 사진 이름(예: ‘느타리버섯 26.11.16 국내산’)을 읽으면 여기서 고를 수 있습니다. 날짜가 검수 날짜와 같으면(입고일) 유통기한이 아니라고 보고 원산지만 적습니다. 아래 표에서 연결할 품목과 비고를 고친 뒤 ‘비고에 적용’을 누르세요.</div>
   <div id="insp_tbl"></div>
+ </div>
+ <div id="xl_box" class="noprint">
+  <div class="hd"><b>내 엑셀 발주서(11월 발주서)에 비고 쓰기</b>
+   <button class="b sub" id="xl_filebtn" title="날짜별 시트가 있는 11월 발주서 엑셀을 고르세요">엑셀 발주서 고르기</button>
+   <input type="file" id="xl_file" accept=".xlsx,.xlsm" hidden>
+   <select id="xl_sheet" title="비고를 쓸 날짜 시트"></select>
+   <button class="b" id="xl_save" disabled>비고 써서 엑셀로 받기</button>
+   <span id="xl_msg"></span></div>
+  <div class="small">위 ‘검수서 → 비고 채우기’에서 고른 검수서(또는 가져온 검수서 엑셀)를 기준으로, 고른 엑셀 발주서의 해당 날짜 시트 비고 칸에 유통·소비기한과 원산지를 적습니다. 엑셀의 사진·서식은 그대로 두고 비고 칸만 바꾼 새 파일을 내려받습니다(원본은 바뀌지 않으며 서버에 저장하지 않습니다). 같은 품목이 두 곳에 있으면 모두 적습니다.</div>
+  <div id="xl_tbl"></div>
  </div>
  <div id="warnbox"></div>
  <div class="paper"><h2>발 주 서</h2>
@@ -1051,6 +1072,90 @@ $('#insp_apply').onclick=()=>{
 window.addEventListener('storage',e=>{if(e.key===INSP_KEY){inspFillSrc();if(!INSP.src)inspBuild();}});
 try{const ch=new BroadcastChannel('sikmate-inspection');ch.onmessage=()=>{inspFillSrc();if(!INSP.src||INSP.src.date===$('#insp_src').value)inspBuild();};}catch(e){}
 function inspRefresh(){inspFillSrc();if(!INSP.src||INSP.sig!==ORD.rows.map(r=>r.name).join('|'))inspBuild();}
+
+// ---------- 검수서 → 내 엑셀 발주서(파일) 비고
+const XL={file:null,sheets:[],rows:[],items:[]};
+function xlSheetObj(){return XL.sheets.find(s=>s.sheet===$('#xl_sheet').value)||null;}
+function xlBuild(){
+  const src=inspSource(),sh=xlSheetObj();XL.rows=[];XL.items=sh?sh.items:[];
+  if(!XL.file||!sh){$('#xl_tbl').classList.remove('on');$('#xl_save').disabled=true;return;}
+  if(!src){$('#xl_tbl').classList.remove('on');$('#xl_save').disabled=true;$('#xl_msg').textContent='위에서 검수서를 먼저 고르세요.';return;}
+  const items=XL.items;
+  XL.rows=src.names.map(nm=>{
+    const p=inspParse(nm);let best=-1,bs=0;
+    items.forEach((it,i)=>{const sc=inspScore(p.product,it.name);if(sc>bs){bs=sc;best=i;}});
+    return{name:nm,p,target:(bs>=55)?best:-1,dup:'',score:bs,note:inspNote(p,src.date)};
+  });
+  const key=i=>inspNorm(items[i].name),win={};
+  XL.rows.forEach((r,k)=>{if(r.target<0)return;const kk=key(r.target),w=win[kk];if(w===undefined||XL.rows[w].score<r.score)win[kk]=k;});
+  XL.rows.forEach((r,k)=>{if(r.target>=0&&win[key(r.target)]!==k){r.dup=items[r.target].name;r.target=-1;}});
+  xlRender();
+}
+function xlGroup(i){const k=inspNorm(XL.items[i].name);return XL.items.map((it,j)=>j).filter(j=>inspNorm(XL.items[j].name)===k);}
+function xlRender(){
+  const box=$('#xl_tbl'),items=XL.items,src=inspSource(),sh=xlSheetObj();
+  const seen=new Set(),opts=items.map((it,i)=>{const k=inspNorm(it.name);if(seen.has(k))return'';seen.add(k);return `<option value="${i}">${esc(it.name)}${xlGroup(i).length>1?' (2곳)':''}</option>`;}).join('');
+  let h='<table><tr><th>검수서 사진 이름</th><th style="width:70px">날짜</th><th style="width:90px">원산지</th><th style="width:190px">→ 엑셀 발주서 품목</th><th style="width:150px">지금 비고</th><th style="width:200px">비고에 적을 내용</th></tr>';
+  XL.rows.forEach((r,k)=>{
+    const cur=r.target>=0?xlGroup(r.target).map(j=>items[j].note).filter(Boolean).join(' / '):'';
+    h+=`<tr class="${r.target<0?'nomatch':''}" data-k="${k}"><td>${esc(r.name)}</td><td>${esc(r.p.date)}</td><td>${esc(r.p.origin)}</td>`+
+      `<td><select data-t="${k}"><option value="-1">(넣지 않음)</option>${opts}</select>${r.dup?` <span class="small" style="color:#b45309">‘${esc(r.dup)}’에는 다른 사진이 연결됨</span>`:''}</td>`+
+      `<td class="small" data-c="${k}">${esc(cur)}</td><td><input type="text" data-n="${k}" value="${esc(r.note)}" placeholder="(적을 내용 없음)"></td></tr>`;
+  });
+  box.innerHTML=h+'</table>';box.classList.add('on');
+  XL.rows.forEach((r,k)=>{const s2=box.querySelector(`select[data-t="${k}"]`);if(s2)s2.value=String(r.target>=0?xlGroup(r.target)[0]:-1);});
+  const n=XL.rows.filter(r=>r.target>=0).length;
+  $('#xl_save').disabled=!n;
+  $('#xl_msg').textContent=`${sh.sheet}(입고일 ${sh.date||'?'}) · 검수서 ${XL.rows.length}장 중 ${n}장을 엑셀 품목에 연결했습니다.`+(sh.date&&src.date&&sh.date!==src.date?' ⚠ 검수서 날짜와 시트의 입고일이 다릅니다. 시트를 확인하세요.':'')+(XL.rows.length-n?` 노란 줄 ${XL.rows.length-n}장은 못 찾았습니다(필요하면 직접 고르세요).`:'');
+}
+$('#xl_tbl').addEventListener('change',e=>{
+  const t=e.target;
+  if(t.dataset.t!==undefined){const r=XL.rows[+t.dataset.t];r.target=+t.value;r.dup='';t.closest('tr').classList.toggle('nomatch',r.target<0);
+    const c=t.closest('tr').querySelector('[data-c]');if(c)c.textContent=r.target>=0?xlGroup(r.target).map(j=>XL.items[j].note).filter(Boolean).join(' / '):'';
+    $('#xl_save').disabled=!XL.rows.some(x=>x.target>=0);}
+  if(t.dataset.n!==undefined){XL.rows[+t.dataset.n].note=t.value.trim();}
+});
+$('#xl_filebtn').onclick=()=>$('#xl_file').click();
+$('#xl_file').onchange=async e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  $('#xl_msg').textContent='엑셀 발주서를 읽는 중…';
+  const fd2=new FormData();fd2.append('file',f);
+  try{const r=await fetch('/api/order/xlsx-items',{method:'POST',body:fd2});
+    if(!r.ok){let t='';try{t=(await r.json()).detail}catch(_){}throw new Error(t||('오류 '+r.status));}
+    const j=await r.json();XL.file=f;XL.sheets=j.sheets;
+    const src=inspSource(),want=(src&&src.date)||$('#rd').value;
+    $('#xl_sheet').innerHTML=j.sheets.map(s=>`<option value="${esc(s.sheet)}">${esc(s.sheet)}${s.date?' ('+s.date.slice(5)+')':''}</option>`).join('');
+    const hit=j.sheets.find(s=>s.date===want)||j.sheets[j.sheets.length-1];
+    $('#xl_sheet').value=hit.sheet;xlBuild();
+  }catch(err){XL.file=null;$('#xl_msg').textContent='엑셀 발주서를 읽지 못했습니다: '+err.message;}
+};
+$('#xl_sheet').onchange=xlBuild;
+$('#insp_src').addEventListener('change',()=>{if(XL.file)xlBuild();});
+$('#insp_lbl').addEventListener('change',()=>{if(XL.file)setTimeout(xlBuild,0);});
+$('#xl_save').onclick=async()=>{
+  const sh=xlSheetObj();if(!XL.file||!sh)return;
+  const over=$('#insp_over').checked,edits=[],done=new Set();let skip=0;
+  for(const r of XL.rows){
+    if(r.target<0||!r.note)continue;
+    for(const j of xlGroup(r.target)){
+      if(done.has(j))continue;done.add(j);
+      const it=XL.items[j];
+      if(it.note&&!over&&it.note!==r.note&&!inspAutoNote(it.note)){skip++;continue;}
+      edits.push({sheet:sh.sheet,cell:it.cell,text:r.note});
+    }
+  }
+  if(!edits.length){$('#xl_msg').textContent='적을 내용이 없습니다.'+(skip?` (직접 적어 둔 비고 ${skip}칸은 그대로 둡니다. 바꾸려면 ‘이미 적힌 비고도 바꾸기’를 체크)`:'');return;}
+  $('#xl_save').disabled=true;$('#xl_msg').textContent='엑셀을 만드는 중… (사진이 많으면 잠시 걸립니다)';
+  const fd3=new FormData();fd3.append('file',XL.file);fd3.append('edits',JSON.stringify(edits));
+  try{const r=await fetch('/api/order/xlsx-fill',{method:'POST',body:fd3});
+    if(!r.ok){let t='';try{t=(await r.json()).detail}catch(_){}throw new Error(t||('오류 '+r.status));}
+    const blob=await r.blob(),a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download=XL.file.name.replace(/\.xlsx?m?$/i,'')+'_'+sh.sheet+' 비고.xlsx';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    $('#xl_msg').textContent=`${sh.sheet} 시트 비고 ${edits.length}칸을 적은 엑셀을 내려받았습니다.`+(skip?` 직접 적어 둔 비고 ${skip}칸은 그대로 두었습니다.`:'');
+  }catch(err){$('#xl_msg').textContent='엑셀을 만들지 못했습니다: '+err.message;}
+  $('#xl_save').disabled=false;
+};
+window.addEventListener('storage',e=>{if(e.key===INSP_KEY&&XL.file)setTimeout(xlBuild,50);});
 // ---------- init
 (function(){
   const today=new Date();
