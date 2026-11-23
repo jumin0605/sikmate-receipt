@@ -9,7 +9,7 @@
 환경변수
   TOSS_CLIENT_KEY   토스페이먼츠 클라이언트 키 (test_ck_... / live_ck_...)
   TOSS_SECRET_KEY   토스페이먼츠 시크릿 키 (test_sk_... / live_sk_...)  절대 화면·깃허브에 올리지 말 것
-  PLAN_NAME         이용권 이름 (기본 식단온 월 이용권)
+  PLAN_NAME         이용권 이름 (기본 식메이트 월 이용권)
   PLAN_PRICE        1회 결제 금액, 원 (기본 9900)
   PLAN_DAYS         1회 결제로 늘어나는 일수 (기본 30)
   TRIAL_DAYS        가입 뒤 무료 체험 일수 (기본 14)
@@ -44,7 +44,7 @@ def cfg() -> dict:
     return {
         "client_key": os.environ.get("TOSS_CLIENT_KEY", "").strip(),
         "secret_key": os.environ.get("TOSS_SECRET_KEY", "").strip(),
-        "name": os.environ.get("PLAN_NAME", "").strip() or "식단온 월 이용권",
+        "name": os.environ.get("PLAN_NAME", "").strip() or "식메이트 월 이용권",
         "price": max(100, _int_env("PLAN_PRICE", 9900)),
         "days": max(1, _int_env("PLAN_DAYS", 30)),
         "trial": max(0, _int_env("TRIAL_DAYS", 14)),

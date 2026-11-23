@@ -525,7 +525,7 @@ def _esc(s) -> str:
 SAFE_NEXT = ("/app", "/menu", "/photo", "/pricing")
 
 LOGIN_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>로그인 | 식단온</title><style>
+<title>로그인 | 식메이트</title><style>
 body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f0fdfa}
 .box{background:#fff;padding:28px 32px 24px;border-radius:16px;box-shadow:0 6px 24px #0f172a14;width:min(360px,92vw);box-sizing:border-box}
 h3{margin:0 0 4px;color:#115e59;font-size:22px}.sub{color:#64748b;font-size:13.5px;margin-bottom:14px}
@@ -535,7 +535,7 @@ input,button.go{width:100%;padding:13px;font-size:16px;margin-top:10px;box-sizin
 button.go{background:#0f766e;color:#fff;border:0;border-radius:10px;font-weight:700;cursor:pointer;margin-top:14px}button.go:hover{background:#115e59}
 p.err{color:#b91c1c;margin:12px 0 0;font-size:14px}p.hint{color:#64748b;font-size:12.5px;margin:8px 0 0;line-height:1.5}
 a.back{display:block;text-align:center;margin-top:16px;color:#64748b;font-size:14px;text-decoration:none}[hidden]{display:none!important}
-</style><div class=box><h3>식단온</h3><div class=sub>내 계정으로 로그인하면 내 식단표·발주서·설정이 따로 저장됩니다.</div>
+</style><div class=box><h3>식메이트</h3><div class=sub>내 계정으로 로그인하면 내 식단표·발주서·설정이 따로 저장됩니다.</div>
 <div class=tabs><button type=button data-t=login>로그인</button><button type=button data-t=signup>처음이에요 (가입)</button></div>
 <form method=post action=/login id=f-login><input name=username placeholder="아이디" value="@@USER@@" autocomplete=username required @@AF1@@>
 <input type=password name=password placeholder="비밀번호" autocomplete=current-password required>
@@ -726,7 +726,7 @@ def logout():
 
 
 ACCOUNT_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>내 계정 | 식단온</title><style>body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f0fdfa}
+<title>내 계정 | 식메이트</title><style>body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f0fdfa}
 .box{background:#fff;padding:28px 32px;border-radius:16px;box-shadow:0 6px 24px #0f172a14;width:min(380px,92vw);box-sizing:border-box}
 h3{margin:0 0 4px;color:#115e59}.who{color:#475569;margin-bottom:12px}h4{margin:18px 0 0;color:#0f172a;font-size:15px}
 input,button{width:100%;padding:12px;font-size:15px;margin-top:10px;box-sizing:border-box}input{border:1px solid #cbd5e1;border-radius:10px}
@@ -776,7 +776,7 @@ def account_password(request: Request, old: str = Form(""), new: str = Form(""),
 
 
 PRICING_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>이용권 결제 | 식단온</title><script src="https://js.tosspayments.com/v1/payment"></script>
+<title>이용권 결제 | 식메이트</title><script src="https://js.tosspayments.com/v1/payment"></script>
 <style>body{font-family:'Malgun Gothic',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f0fdfa}
 .box{background:#fff;padding:28px 32px;border-radius:16px;box-shadow:0 6px 24px #0f172a14;width:min(420px,92vw);box-sizing:border-box}
 h3{margin:0 0 6px;color:#115e59}.st{margin:10px 0 14px;padding:10px 12px;border-radius:10px;background:#ecfeff;color:#155e75;font-size:14px}
