@@ -234,7 +234,7 @@ table{border-collapse:collapse;background:#fff}
  <table id="wk_menu"></table>
  <h3>2. 검식일지 메뉴DB <span class="small" id="wk_dbinfo"></span></h3>
  <div id="wk_db"></div>
- <h3>3. 사진 <span class="small">— <b>식단 사진 탭에서 정리한 사진이 자동으로 들어옵니다.</b> 같은 날 (1) 중식 보존식, (2) 중식 식판, (3) 석식 보존식, (4) 석식 식판 칸입니다. 다른 사진은 끌어다 놓거나 칸을 눌러 넣고, 칸끼리 끌어서 자리를 바꿀 수 있습니다. <b>사진을 누르면 원근·기울기·회전 편집 창이 열립니다.</b></span></h3>
+ <h3>3. 사진 <span class="small">— <b>식단 사진 탭에서 정리한 사진이 자동으로 들어옵니다.</b> 같은 날 (1) 중식 상차림, (2) 중식 보존식, (3) 석식 상차림, (4) 석식 보존식 칸입니다. 다른 사진은 끌어다 놓거나 칸을 눌러 넣고, 칸끼리 끌어서 자리를 바꿀 수 있습니다. <b>사진을 누르면 원근·기울기·회전 편집 창이 열립니다.</b></span></h3>
  <div class="wkdrop" id="wk_drop">사진·폴더를 여기에 끌어다 놓거나 눌러서 고르세요 <button class="b sub" id="wk_pickdir" style="margin-left:8px">폴더 선택</button> <button class="b sub" id="wk_reload" title="식단 사진 탭에서 정리한 이 주 사진을 다시 채웁니다">식단 사진 탭에서 다시 가져오기</button> <button class="b sub" id="wk_clearph">사진 모두 빼기</button></div>
  <div class="hint" id="wk_shinfo"></div>
  <input type="file" id="wk_files" accept="image/*" multiple hidden><input type="file" id="wk_dir" webkitdirectory directory multiple hidden><input type="file" id="wk_one" accept="image/*" hidden>
@@ -281,7 +281,7 @@ table{border-collapse:collapse;background:#fff}
             <button class="pe-ib" id="pe_pApply">적용</button>
             <button class="pe-ib" id="pe_pOff">원근 해제</button>
           </div>
-          <div class="note" id="pe_pNote">‘모서리 잡기’를 누르고 네 개의 점을 식판(또는 쟁반) 네 모서리에 끌어다 놓은 뒤 ‘적용’을 누르세요. 비스듬히 찍힌 사진이 반듯한 사각형으로 펴집니다.</div>
+          <div class="note" id="pe_pNote">‘모서리 잡기’를 누르고 네 개의 점을 상차림(또는 쟁반) 네 모서리에 끌어다 놓은 뒤 ‘적용’을 누르세요. 비스듬히 찍힌 사진이 반듯한 사각형으로 펴집니다.</div>
         </div>
         <div class="grp">
           <h4>되돌리기</h4>
@@ -600,7 +600,7 @@ var MPS = (function(){
   };
 })();
 const WK={db:null,photos:{},loaded:false,removed:{}};
-const WK_SLOTS=[['lunch','keep','중식 보존식'],['lunch','tray','중식 식판'],['dinner','keep','석식 보존식'],['dinner','tray','석식 식판']];
+const WK_SLOTS=[['lunch','tray','중식 상차림'],['lunch','keep','중식 보존식'],['dinner','tray','석식 상차림'],['dinner','keep','석식 보존식']];
 const WK_SET=[['inspector','검식자','손성임'],['inspect_time','검식시간','10시45분'],['lunch_time','채취시간(중식)','11시00분'],['dinner_time','채취시간(석식)','16시00분'],['freezer','냉동고 온도','-18℃'],['keep_days','보존식 보관일수','6'],['keeper','담당자/채취자','영양사'],['sat_keeper','토요일 채취자','조리사'],['sun_keeper','일요일 채취자','요양사']];
 function wkMsg(t,err){const m=$('#wk_msg');m.textContent=t||'';m.style.color=err?'#c0392b':'#1f4e78';}
 async function wkLoadDb(){
@@ -791,7 +791,7 @@ async function wkImport(file){
      <label class="opt"><input type="checkbox" id="wki_menu" ${filled?'checked':''} ${filled?'':'disabled'}><span>식단 ${filled}칸을 <b>식단표 탭</b>의 이 주에 적용 <span class="small">${curWeek?'⚠ 웹에 이미 저장된 이 주 식단을 파일 내용으로 바꿉니다.':'웹에는 아직 이 주 식단 수정 내용이 없습니다.'} 주메뉴: ${esc([...mains].slice(0,8).join(', '))}${mains.size>8?' …':''}</span></span></label>
      <label class="opt"><input type="checkbox" id="wki_set" ${Object.keys(I.settings).length?'checked':'disabled'}><span>설정 적용 <span class="small">${setTxt}</span></span></label>
      <label class="opt"><input type="checkbox" id="wki_db" ${dbNew.length+dbChg.length?'checked':'disabled'}><span>메뉴DB: 새 메뉴 ${dbNew.length}개${dbChg.length?`, 값이 다른 메뉴 ${dbChg.length}개`:''} 저장 <span class="small">${esc(dbNew.concat(dbChg).slice(0,12).join(', '))}${dbNew.length+dbChg.length>12?' …':''}${dbNew.length+dbChg.length?'':'파일의 메뉴DB가 웹과 같습니다.'}</span></span></label>
-     <label class="opt"><input type="checkbox" id="wki_ph" ${np?'checked':'disabled'}><span>사진 ${np}장을 사진 칸에 넣기 <span class="small">주간식단표(사진) → 식판 칸, 보존식 기록지(사진) → 보존식 칸${I.photos_skipped?` · 자리를 알 수 없는 그림 ${I.photos_skipped}개는 뺐습니다`:''}</span></span></label>
+     <label class="opt"><input type="checkbox" id="wki_ph" ${np?'checked':'disabled'}><span>사진 ${np}장을 사진 칸에 넣기 <span class="small">주간식단표(사진) → 상차림 칸, 보존식 기록지(사진) → 보존식 칸${I.photos_skipped?` · 자리를 알 수 없는 그림 ${I.photos_skipped}개는 뺐습니다`:''}</span></span></label>
      <label class="opt"><input type="checkbox" id="wki_tpl" ${I.template_ok?'':'disabled'}><span>이 파일을 <b>앞으로 내려받을 엑셀의 양식</b>으로 쓰기 <span class="small">${I.template_ok?'시트 모양·서식·수식·메뉴DB·매크로를 이 파일 그대로 쓰고, 식단·사진·메모만 비워서 저장합니다. 기본 양식으로 언제든 되돌릴 수 있습니다.':'필요한 시트가 없어 양식으로 쓸 수 없습니다: '+esc(I.missing_sheets.join(', '))}</span></span></label>
      <div style="margin-top:8px"><button class="b" id="wki_apply">적용</button> <button class="b sub" id="wki_cancel">취소</button></div>`;
     $('#wki_apply').onclick=wkApplyImport;$('#wki_cancel').onclick=()=>{WK.imp=null;pv.classList.remove('on');pv.innerHTML='';};
@@ -865,7 +865,7 @@ async function peSrc(p){ // 편집의 기준이 되는 원본(처음 칸에 들�
   c.getContext('2d').drawImage(bmp,0,0,c.width,c.height);if(bmp.close)bmp.close();p.srcCv=c;return c;
 }
 function peSlots(){const out=[];for(let di=0;di<7;di++)for(const [m,k] of WK_SLOTS){const id=`d${di}_${m}_${k}`;if(WK.photos[id])out.push(id);}return out;}
-function peSlotLabel(slot){const m=slot.match(/^d(\d)_(lunch|dinner)_(tray|keep)$/);if(!m)return slot;const st=pd($('#wk_ws').value);return `${WD[+m[1]]} ${md(addDays(st,+m[1]))} ${m[2]==='lunch'?'중식':'석식'} ${m[3]==='keep'?'보존식':'식판'}`;}
+function peSlotLabel(slot){const m=slot.match(/^d(\d)_(lunch|dinner)_(tray|keep)$/);if(!m)return slot;const st=pd($('#wk_ws').value);return `${WD[+m[1]]} ${md(addDays(st,+m[1]))} ${m[2]==='lunch'?'중식':'석식'} ${m[3]==='keep'?'보존식':'상차림'}`;}
 async function peOpen(slot){
   const p=WK.photos[slot];if(!p)return;
   if(PE.pMode)peApplyQuad();
