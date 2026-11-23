@@ -569,7 +569,7 @@ var MPS = (function(){
 
 var SHARE_SESSION = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 var SLOT_LABEL = ['', '중식 상차림', '중식 보존식', '석식 상차림', '석식 보존식'];
-var shareTimer = null;
+var shareTimer = null, SHARE_ERR = '';
 function scheduleShare(){ clearTimeout(shareTimer); shareTimer = setTimeout(shareNow, 400); }
 function sharedKeyOf(it){ return (!it.manualName && it.date && it.seq >= 1 && it.seq <= 4) ? it.date + '|' + it.seq : ''; }
 // 날짜 + 번호((1)~(4)) 로 주간 서류 칸을 정한다. 같은 날짜를 이 화면에서 새로 정리하면 예전 것은 지운다.
@@ -592,7 +592,7 @@ async function shareNow(){
       }
     }
     if (changed) MPS.notify();
-  } catch (e) { /* 저장 공간을 못 쓰는 브라우저면 연결만 빠진다 */ }
+  } catch (e) { /* 저장 공간을 못 쓰는 브라우저면 연결만 빠진다 */ if (!SHARE_ERR) { SHARE_ERR = String((e && e.message) || e || '오류'); render(); } }
 }
 
 // ---------- 목록 화면 ----------
@@ -663,7 +663,7 @@ function updateCard(it, d){
   if (it.ed.quad) tags.push('원근');
   var ed = d.querySelector('.ed'); ed.style.display = tags.length ? '' : 'none'; ed.textContent = tags.join(' · ');
   var si = d.querySelector('.slotinfo');
-  if (si) { var sk = sharedKeyOf(it); si.textContent = sk ? '→ 주간 서류: ' + SLOT_LABEL[it.seq] : (it.manualName ? '직접 바꾼 이름이라 주간 서류에는 안 들어감' : (it.seq > 4 ? '(5번째 이후라 주간 서류에는 안 들어감)' : '')); si.className = 'slotinfo' + (sk ? '' : ' off'); }
+  if (si) { var sk = sharedKeyOf(it); si.textContent = sk ? '→ 주간 서류: ' + SLOT_LABEL[it.seq] + (SHARE_ERR ? ' (연결 실패: 이 브라우저가 저장 공간을 막고 있음)' : '') : (!it.date ? '날짜가 없어 주간 서류에는 안 들어감 (날짜를 고르세요)' : (it.manualName ? '직접 바꾼 이름이라 주간 서류에는 안 들어감' : (it.seq > 4 ? '(5번째 이후라 주간 서류에는 안 들어감)' : ''))); si.className = 'slotinfo' + (sk ? '' : ' off'); }
   var nm = d.querySelector('.nm');
   if (document.activeElement !== nm) nm.value = it.manualName || it.autoName;
   nm.classList.toggle('manual', !!it.manualName);
