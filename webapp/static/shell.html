@@ -25,7 +25,7 @@ iframe.on{display:block}
 </style></head><body>
 <div class="bar">
   <a class="logo" href="/" target="_top"><i>식</i>식메이트</a>
-  <button class="tab" data-k="menu">신태양 식단표 · 발주서</button>
+  <button class="tab" data-k="menu">식단표 · 발주서</button>
   <button class="tab" data-k="photo">식단 사진</button>
   <button class="tab" data-k="insp">식자재 검수서 · 원산지 표시</button>
   <button class="tab" data-k="receipt">영수증 정리</button>
@@ -36,7 +36,7 @@ iframe.on{display:block}
   <form method="post" action="/logout" target="_top"><button type="submit">로그아웃</button></form>
 </div>
 <div class="frames">
-  <iframe id="f-menu" title="신태양 식단표 발주서 생성기"></iframe>
+  <iframe id="f-menu" title="식단표 발주서 생성기"></iframe>
   <iframe id="f-photo" title="식단 사진 정리"></iframe>
   <iframe id="f-insp" title="식자재 검수서 원산지 표시"></iframe>
   <iframe id="f-receipt" title="영수증 정리"></iframe>
@@ -45,7 +45,7 @@ iframe.on{display:block}
 // 만료된 세션 등으로 이 화면이 다른 화면 안에 겹쳐 열리면 맨 위로 빠져나온다
 if (window.top !== window) { window.top.location.href = location.href; }
 var SRC = { menu: '/menu', photo: '/photo', insp: '/inspection', receipt: '/app/receipt' };
-var TITLE = { menu: '식메이트 · 신태양 식단표·발주서', photo: '식메이트 · 식단 사진', insp: '식메이트 · 식자재 검수서', receipt: '식메이트 · 영수증 정리' };
+var TITLE = { menu: '식메이트 · 식단표·발주서', photo: '식메이트 · 식단 사진', insp: '식메이트 · 식자재 검수서', receipt: '식메이트 · 영수증 정리' };
 try {
   var mm = document.cookie.match(/(?:^|; )sm_name=([^;]*)/);
   if (mm) document.getElementById('who').textContent = decodeURIComponent(mm[1]) + '님';

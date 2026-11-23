@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>신태양 식단표·발주서 생성기</title>
+<title>식단표·발주서 생성기</title>
 <script src="/static/account.js"></script>
 <style>
 *{box-sizing:border-box}
@@ -147,7 +147,7 @@ table{border-collapse:collapse;background:#fff}
  @page{size:A4 landscape;margin:10mm}
 }
 </style></head><body>
-<div class="top noprint"><h1>신태양 식단표 · 발주서 생성기</h1>
+<div class="top noprint"><h1>식단표 · 발주서 생성기</h1>
 <nav><button data-tab="menu" class="on">식단표</button><button data-tab="order">발주서</button><button data-tab="fixed">고정품목 · 설정</button><button data-tab="weekly">주간 서류(엑셀)</button></nav>
 <span id="savemsg"></span></div>
 
@@ -564,7 +564,7 @@ async function syncInit(){
 }
 document.addEventListener('visibilitychange',async()=>{if(document.visibilityState!=='visible')return;try{const r=await pull();if(r.changed&&!(document.activeElement&&/INPUT|SELECT/.test(document.activeElement.tagName)))refreshAll();}catch(e){}});
 $('#syncnow').onclick=syncInit;
-$('#exportbk').onclick=()=>{const b=new Blob([JSON.stringify({kind:'sty-menu-backup',at:new Date().toISOString(),data:payload()})],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='신태양_식단발주_백업_'+fd(new Date())+'.json';a.click();};
+$('#exportbk').onclick=()=>{const b=new Blob([JSON.stringify({kind:'sty-menu-backup',at:new Date().toISOString(),data:payload()})],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='식단발주_백업_'+fd(new Date())+'.json';a.click();};
 $('#importbk').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const j=JSON.parse(await f.text());if(j.kind!=='sty-menu-backup')throw 0;const ch=mergeInto(S,j.data);saveLocal();schedulePush();refreshAll();alert(ch?'백업에서 더 최신인 내용을 가져왔습니다.':'가져올 새 내용이 없습니다(이미 더 최신).');}catch(err){alert('백업 파일을 읽지 못했습니다.');}e.target.value='';};
 
 // ---------- 주간 서류(엑셀): 식단표·검식일지 .xlsm
