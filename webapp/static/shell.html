@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>식단온</title>
+<title>식메이트</title>
 <script src="/static/account.js"></script>
 <style>
 html,body{height:100%;margin:0}
@@ -24,7 +24,7 @@ iframe.on{display:block}
 @media print{.bar{display:none}}
 </style></head><body>
 <div class="bar">
-  <a class="logo" href="/" target="_top"><i>식</i>식단온</a>
+  <a class="logo" href="/" target="_top"><i>식</i>식메이트</a>
   <button class="tab" data-k="menu">신태양 식단표 · 발주서</button>
   <button class="tab" data-k="photo">식단 사진</button>
   <button class="tab" data-k="insp">식자재 검수서 · 원산지 표시</button>
@@ -45,7 +45,7 @@ iframe.on{display:block}
 // 만료된 세션 등으로 이 화면이 다른 화면 안에 겹쳐 열리면 맨 위로 빠져나온다
 if (window.top !== window) { window.top.location.href = location.href; }
 var SRC = { menu: '/menu', photo: '/photo', insp: '/inspection', receipt: '/app/receipt' };
-var TITLE = { menu: '식단온 · 신태양 식단표·발주서', photo: '식단온 · 식단 사진', insp: '식단온 · 식자재 검수서', receipt: '식단온 · 영수증 정리' };
+var TITLE = { menu: '식메이트 · 신태양 식단표·발주서', photo: '식메이트 · 식단 사진', insp: '식메이트 · 식자재 검수서', receipt: '식메이트 · 영수증 정리' };
 try {
   var mm = document.cookie.match(/(?:^|; )sm_name=([^;]*)/);
   if (mm) document.getElementById('who').textContent = decodeURIComponent(mm[1]) + '님';
