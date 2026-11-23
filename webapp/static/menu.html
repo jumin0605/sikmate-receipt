@@ -659,19 +659,20 @@ function wkSetPhoto(slot,blob,name,src,sig){const old=WK.photos[slot];if(old)URL
 async function wkLoadShared(){
   const ws=$('#wk_ws').value;if(!ws)return 0;
   let recs=[];try{recs=await MPS.all();}catch(e){return 0;}
-  const st=pd(ws),want={};
-  for(const r of recs){if(!r||!r.date||!r.blob)continue;const di=Math.round((pd(r.date)-st)/864e5);if(di<0||di>6||!(r.seq>=1&&r.seq<=4))continue;const [m,k]=WK_SLOTS[r.seq-1];want[`d${di}_${m}_${k}`]=r;}
+  const st=pd(ws),want={},others={};
+  for(const r of recs){if(!r||!r.date||!r.blob)continue;const di=Math.round((pd(r.date)-st)/864e5);if((di<0||di>6)&&r.seq>=1&&r.seq<=4){others[fd(mondayOf(pd(r.date)))]=(others[fd(mondayOf(pd(r.date)))]||0)+1;}if(di<0||di>6||!(r.seq>=1&&r.seq<=4))continue;const [m,k]=WK_SLOTS[r.seq-1];want[`d${di}_${m}_${k}`]=r;}
   let n=0,changed=false;
   for(const sl in WK.photos){const p=WK.photos[sl];if(p.src!=='shared')continue;const r=want[sl];if(!r||(r.key+'|'+r.owner+'|'+r.ver)!==p.sig){URL.revokeObjectURL(p.url);delete WK.photos[sl];changed=true;}}
   for(const sl in want){const r=want[sl],sig=r.key+'|'+r.owner+'|'+r.ver,p=WK.photos[sl];
     if(p&&p.src!=='shared')continue;if(WK.removed[sl]===sig)continue;if(p&&p.sig===sig){n++;continue;}
     wkSetPhoto(sl,r.blob,r.name,'shared',sig);n++;changed=true;}
   if(changed)wkRenderPhotos();
-  WK.sharedCount=n;wkSharedInfo();
+  WK.sharedCount=n;WK.otherWeeks=Object.keys(others).sort().map(w=>[w,others[w]]);wkSharedInfo();
   return n;
 }
 function wkSharedInfo(){const el=$('#wk_shinfo');if(!el)return;const n=Object.values(WK.photos).filter(p=>p.src==='shared').length,m=Object.values(WK.photos).filter(p=>p.src!=='shared').length;
-  el.textContent=n||m?`식단 사진 탭에서 자동으로 ${n}장`+(m?`, 직접 넣은 사진 ${m}장`:'')+' 들어가 있습니다.':'이 주 날짜의 사진이 아직 없습니다. 식단 사진 탭에서 사진을 올리고 정리하면 여기에 자동으로 들어옵니다.';}
+  el.textContent=n||m?`식단 사진 탭에서 자동으로 ${n}장`+(m?`, 직접 넣은 사진 ${m}장`:'')+' 들어가 있습니다.':'이 주 날짜의 사진이 아직 없습니다. 식단 사진 탭에서 사진을 올리고 정리하면 여기에 자동으로 들어옵니다.';
+  const ow=WK.otherWeeks||[];if(ow.length){const sp=document.createElement('span');sp.style.cssText='display:block;margin-top:6px';sp.append(n||m?'다른 주의 사진도 식단 사진 탭에 있습니다: ':'식단 사진 탭에는 다른 주의 사진이 있습니다 (날짜가 이 주가 아니라서 안 들어옴): ');for(const [w,c] of ow.slice(0,6)){const b=document.createElement('button');b.className='b sub';b.style.marginRight='6px';b.textContent=`${w} 주 (${c}장)로 이동`;b.onclick=()=>{$('#wk_ws').value=w;$('#wk_ws').onchange();};sp.append(b);}el.append(sp);}}
 MPS.listen(()=>{if(WK.loaded)wkLoadShared();});
 function wkRenderPhotos(){
   const st=pd($('#wk_ws').value);let h='<tr><th style="width:70px"></th>'+WK_SLOTS.map(s=>`<th>${s[2]}</th>`).join('')+'</tr>';
