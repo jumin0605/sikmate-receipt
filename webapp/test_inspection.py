@@ -489,6 +489,10 @@ class Wiring(unittest.TestCase):
         shell = (ROOT / "static" / "shell.html").read_text(encoding="utf-8")
         self.assertIn("insp: '/inspection'", shell)
         self.assertIn('@app.get("/inspection"', app)
+        # 폴더를 끌어다 놓으면 영수증 올리기와 같은 읽기 기능을 써야 한다. 이 줄이 없으면 화면이 조용히 멈춘다.
+        self.assertIn('src="/static/receipt-upload.js"', html)
+        self.assertIn("typeof ReceiptUpload", html)
+        self.assertNotIn("if (!uploadApi) return", html)
 
 
 if __name__ == "__main__":
